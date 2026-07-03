@@ -12,21 +12,28 @@ explainable. That's a social-choice problem, and the merging/tie-breaking logic 
 the whole point of this project.
 
 ```
-open index.html          # that's it — no build, no dependencies (works offline;
+open index.html          # solo mode — no build, no dependencies (works offline;
                          # web fonts enhance the type when you're online)
 ```
 
-Or, for live-editing with caching disabled:
+**Live rooms** — everyone on their own screen, same wifi, verdict on all at once:
 
 ```
-python3 serve.py         # http://localhost:4173
-node engine.test.js      # run the engine's test suite (19 tests)
+node server.js           # then open http://localhost:4173 and "Start a live room"
+                         # share the 4-letter code; each person joins on their phone
+```
+
+Tests (no dependencies, either):
+
+```
+node engine.test.js      # the decision engine — 19 tests
+node server.test.js      # the live-rooms backend — 7 tests (spawns the server)
 ```
 
 You can curate tonight's actual shortlist (add your own titles, drop what you can't
-stream, mark what you've seen), and **copy a setup link** so each person sets their
-own taste on their own phone — no accounts, no backend; the whole session lives in
-the URL.
+stream, mark what you've seen), save and switch between **named crews** (each with
+its own fairness ledger), and either **copy a setup link** or spin up a **live room**
+so everyone sets their own taste privately on their own device.
 
 ---
 
@@ -224,7 +231,9 @@ It's a real tool, not a fixed menu:
 | [`catalog.js`](catalog.js) | An editorial catalog (~46 films & series) with genres, runtimes and authored mood/quality attributes. Swap in your own library and nothing else changes. |
 | [`app.js`](app.js) | UI, state and `localStorage` persistence. Clean onboarding (blank seats + "load an example crew"), **first-class crews** (save / name / switch, each with its own ledger), the editable candidate pool, the skippable split-flap reveal, the verdict with its deep analysis behind progressive disclosure, an **interactive counterfactual** ("tug on a preference and watch the pick flip, live"), copyable verdicts, shareable setup links, synthesized **sound design**, and the motion layer. |
 | [`index.html`](index.html) · [`styles.css`](styles.css) | An editorial, stripped-back identity — a bold projector-lit hero in Fraunces (with a marquee ticker + cursor glow), numbered sections, film grain, and a Solari split-flap "now showing" reveal (with Web-Audio "clack" + chime, muteable). Reveals use `IntersectionObserver` (robust, not animation-frame-gated); fully responsive; honours `prefers-reduced-motion`. |
-| [`serve.py`](serve.py) | A tiny no-cache static server, for live-editing only. Not needed to use the app. |
+| [`server.js`](server.js) | **Live-rooms backend** — pure Node stdlib, no dependencies: serves the app *and* runs a hand-rolled WebSocket server (RFC 6455). Rooms, presence (tastes stay private until the reveal), host-only controls, the engine as the server-side source of truth, and per-room fairness ledgers persisted to disk by code. |
+| [`server.test.js`](server.test.js) | 7 tests driving the backend with real WebSocket clients: create/join, private presence, one identical broadcast verdict, host-only enforcement, ledger persistence, and disconnect handling. |
+| [`serve.py`](serve.py) | A tiny no-cache static server, for solo live-editing only. Not needed to use the app. |
 
 ## Testing
 
@@ -251,6 +260,10 @@ engine is deterministic, these are exact assertions, not snapshots.
 
 - The mood/quality attributes are *authored*, not learned — this is a decision
   engine, not a data pipeline. Point it at real ratings and it behaves identically.
+- **Live rooms** work out of the box on one machine or a shared wifi (the host runs
+  `node server.js`; everyone opens the host's address). To use them across the open
+  internet you'd deploy `server.js` to any Node host — no code changes, just a URL.
+  Solo mode needs nothing but the file.
 - Crews are first-class: save several ("Movie Club", "Family", "Date night") and
   switch between them, each with its own fairness ledger. Memory and the "seen"
   list live in `localStorage` keyed by a stable crew id (not names), so renaming a

@@ -3,5 +3,5 @@
 *.log
 Thumbs.db
 
-# Local tooling / preview config (not part of the app)
-.claude/
+# Runtime data written by the live-rooms server
+.standoff-rooms.json

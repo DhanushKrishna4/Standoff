@@ -100,6 +100,41 @@ main { position: relative; z-index: 2; }
 .text-link { margin-top: 10px; background: none; border: none; font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.6px; text-transform: uppercase; color: var(--gold); cursor: pointer; padding: 0; transition: opacity 0.2s; }
 .text-link:hover { opacity: 0.7; }
 
+.sect-links { display: flex; gap: 18px; flex-wrap: wrap; justify-content: flex-end; margin-top: 10px; }
+#live-btn { color: var(--gold-2); }
+
+/* ============================== live room =========================== */
+.room-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; padding: 14px 18px; border: 1px solid var(--gold-soft); background: var(--gold-soft); border-radius: 14px; margin-bottom: 18px; }
+.room-code { font-family: var(--font-ui); font-size: 14px; color: var(--ink-2); }
+.room-code b { font-family: var(--font-mono); font-size: 20px; letter-spacing: 3px; color: var(--gold-2); margin-left: 6px; }
+.room-actions { display: flex; gap: 8px; }
+.room-actions button { font-family: var(--font-ui); font-size: 12.5px; color: var(--ink-2); background: var(--panel); border: 1px solid var(--line-2); border-radius: 999px; padding: 7px 14px; cursor: pointer; transition: all 0.16s; }
+.room-actions button:hover { color: var(--ink); border-color: var(--gold); }
+.room-roster { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 22px; }
+.rp { display: inline-flex; align-items: center; gap: 9px; padding: 7px 13px 7px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); opacity: 0.6; transition: opacity 0.25s, border-color 0.25s; }
+.rp.ready { opacity: 1; border-color: var(--line-2); }
+.rp-av { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-family: var(--font-display); font-weight: 600; font-size: 13px; color: #1a1204; }
+.rp-name { font-size: 13.5px; color: var(--ink); font-weight: 500; }
+.rp-tag { font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.5px; text-transform: uppercase; color: var(--ink-3); border: 1px solid var(--line-2); border-radius: 5px; padding: 1px 4px; margin-left: 3px; }
+.rp-tag.host { color: var(--gold-2); border-color: rgba(243,178,62,0.4); }
+.rp-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); }
+.rp.ready .rp-dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.room-you-grid { grid-template-columns: minmax(300px, 460px) !important; }
+.room-wait { font-family: var(--font-mono); font-size: 12px; color: var(--ink-3); letter-spacing: 0.5px; }
+
+/* room entry modal */
+.room-entry .rm-field { display: block; margin: 18px 0 14px; }
+.room-entry .rm-field span { display: block; font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--ink-3); margin-bottom: 7px; }
+.room-entry input[type="text"] { width: 100%; background: var(--bg); border: 1px solid var(--line-2); border-radius: 10px; color: var(--ink); font-family: var(--font-ui); font-size: 15px; padding: 12px 15px; }
+.room-entry input:focus { outline: none; border-color: var(--gold); }
+.rm-create { width: 100%; text-align: center; padding: 13px; font-size: 15px; }
+.rm-or { display: flex; align-items: center; gap: 14px; margin: 22px 0; color: var(--ink-3); font-size: 12.5px; }
+.rm-or::before, .rm-or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.rm-join { display: flex; gap: 10px; }
+.rm-code { flex: 1; text-transform: uppercase; letter-spacing: 6px; font-family: var(--font-mono) !important; text-align: center; font-size: 20px !important; }
+.rm-join .af-cancel { white-space: nowrap; }
+.rm-note { margin-top: 14px; font-size: 13px; color: var(--gold-2); min-height: 18px; }
+
 /* ============================== crew tabs =========================== */
 .crew-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 26px; }
 .crew-tab { display: inline-flex; align-items: center; gap: 9px; font-family: var(--font-ui); font-size: 13.5px; color: var(--ink-2); background: var(--panel); border: 1px solid var(--line-2); border-radius: 999px; padding: 8px 15px; cursor: pointer; transition: all 0.18s var(--ease); }

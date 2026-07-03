@@ -64,7 +64,10 @@
         <h2 class="sect-title">The room</h2>
         <div class="sect-aside">
           <p class="sect-hint">Add who's watching. Tap a genre to cycle <b>like → love → dislike → veto</b>, then set tonight's mood.</p>
-          <button class="text-link" id="example-btn">Load an example crew <span aria-hidden="true">↗</span></button>
+          <div class="sect-links">
+            <button class="text-link" id="live-btn">Start a live room <span aria-hidden="true">⚡</span></button>
+            <button class="text-link" id="example-btn">Load an example crew <span aria-hidden="true">↗</span></button>
+          </div>
         </div>
       </div>
       <div class="crew-tabs" id="crew-tabs" aria-label="Your crews"></div>
@@ -140,6 +143,25 @@
       <div class="reveal-label" id="reveal-label">Tallying the room…</div>
       <div class="flap-board" id="flap-board"></div>
       <div class="reveal-sub" id="reveal-sub"></div>
+    </div>
+  </div>
+
+  <!-- live room entry -->
+  <div class="modal-scrim" id="room-modal">
+    <div class="modal room-entry" role="dialog" aria-modal="true" aria-labelledby="room-h">
+      <button class="close-x" id="room-close" aria-label="Close">✕</button>
+      <span class="kicker">Live room ⚡</span>
+      <h3 id="room-h">Everyone on their own screen</h3>
+      <p class="sub">Start a room and share the code. Each person joins on their own phone, sets their taste
+        in private, and the verdict lands on every screen at once — fairness ledger and all.</p>
+      <label class="rm-field"><span>Your name</span><input type="text" id="rm-name" maxlength="18" placeholder="e.g. Ava" autocomplete="off" /></label>
+      <button class="af-submit rm-create" id="rm-create">Start a new room →</button>
+      <div class="rm-or"><span>or join an existing one</span></div>
+      <div class="rm-join">
+        <input type="text" id="rm-code" maxlength="4" placeholder="CODE" class="rm-code" autocomplete="off" aria-label="Room code" />
+        <button class="af-cancel" id="rm-join-btn">Join room</button>
+      </div>
+      <p class="rm-note" id="rm-note"></p>
     </div>
   </div>
 

@@ -42,7 +42,7 @@
   ];
 
   /* ---- state ------------------------------------------------------------ */
-  const state = { crews: [], crewId: null, crew: null, pool: { disabled: [], custom: [] }, memory: { cumulative: {}, debt: {}, history: [], seen: [], nights: 0 }, result: null, exclude: new Set(), locked: false };
+  const state = { crews: [], crewId: null, crew: null, pool: { disabled: [], custom: [] }, memory: { cumulative: {}, debt: {}, history: [], seen: [], nights: 0 }, result: null, exclude: new Set(), locked: false, mode: 'solo', room: null, me: null };
 
   /* ---- unique, non-empty names (engine keys on names) ------------------- */
   function crewNames() {
@@ -211,6 +211,7 @@
    * The room (cast)
    * ====================================================================== */
   function renderCrew() {
+    if (state.mode === 'room') return renderRoom();
     const cards = state.crew.map((p, i) => personCard(p, i)).join('');
     const addBtn = state.crew.length < MAX_PEOPLE
       ? `<button class="add-person" id="add-person" aria-label="Add a person"><span><span class="plus" aria-hidden="true">＋</span>Add someone<br><small>up to ${MAX_PEOPLE}</small></span></button>`
@@ -252,7 +253,10 @@
 
   const findPerson = (pid) => state.crew.find((p) => p.id === pid);
 
+  const persist = () => { if (state.mode === 'room') syncMe(); else saveCrew(); };
   crewEl.addEventListener('click', (e) => {
+    if (e.target.closest('#room-invite')) { copyInvite(); return; }
+    if (e.target.closest('#room-leave')) { leaveRoom(); return; }
     const chip = e.target.closest('.chip');
     if (chip) {
       const p = findPerson(chip.dataset.pid);
@@ -261,7 +265,7 @@
       if (next === 'neutral') delete p.genres[chip.dataset.genre]; else p.genres[chip.dataset.genre] = next;
       chip.dataset.stance = next;
       chip.setAttribute('aria-label', `${chip.dataset.genre}: ${STANCE_WORD[next]}. Tap to change.`);
-      saveCrew();
+      persist();
       return;
     }
     const rm = e.target.closest('.remove-person');
@@ -280,21 +284,21 @@
       p.name = t.value;
       const av = t.closest('.person').querySelector('.avatar');
       if (av) av.textContent = (t.value.trim()[0] || '?').toUpperCase();
-      saveCrew();
+      persist();
     } else if (t.dataset.axis) {
       p.mood[t.dataset.axis] = t.value / 100;
       const ends = t.parentElement.querySelector('.mood-ends');
       ends.querySelector('.lo').classList.toggle('active', t.value < 50);
       ends.querySelector('.hi').classList.toggle('active', t.value >= 50);
-      saveCrew();
+      persist();
     } else if (t.dataset.runtime) {
       const v = +t.value; p.runtimeCap = v;
       const label = t.closest('.person').querySelector('.runtime-val');
       if (label) label.textContent = v >= NO_LIMIT ? 'No limit' : `≤ ${v} min`;
-      saveCrew();
+      persist();
     }
   });
-  crewEl.addEventListener('change', (e) => { if (e.target.dataset.field === 'name') { saveCrew(); renderCrewTabs(); renderLedger(); if (poolOpen) renderPool(); } });
+  crewEl.addEventListener('change', (e) => { if (e.target.dataset.field !== 'name') return; if (state.mode === 'room') { syncMe(); return; } saveCrew(); renderCrewTabs(); renderLedger(); if (poolOpen) renderPool(); });
 
   // crew switcher (tabs)
   $('#crew-tabs').addEventListener('click', (e) => {
@@ -397,7 +401,11 @@
   /* =========================================================================
    * Resolve + the split-flap reveal
    * ====================================================================== */
-  resolveBtn.addEventListener('click', () => { Sound.press(); state.exclude = new Set(); runResolve(true); });
+  resolveBtn.addEventListener('click', () => {
+    Sound.press();
+    if (state.mode === 'room') { if (state.room && state.room.host) Room.send({ t: 'settle' }); return; }
+    state.exclude = new Set(); runResolve(true);
+  });
 
   function runResolve(withReveal) {
     loadMemory();
@@ -447,7 +455,8 @@
       stageEl.innerHTML = `<div class="verdict"><div class="empty-state"><div class="big" aria-hidden="true">🚫</div><h3>Total deadlock.</h3><p>${escapeHtml(r.reason)}</p></div></div>`;
       stageEl.classList.add('show'); return;
     }
-    const x = r.explanation, pick = r.pick, colors = state.crew.map((_, i) => PERSON_COLOR(i));
+    const x = r.explanation, pick = r.pick;
+    const colors = (r.pickRow ? r.pickRow.perPerson : r.ranking[0].perPerson).map((_, i) => PERSON_COLOR(i));
 
     const satRows = x.perPerson.map((pp) => { const w = Math.max(5, Math.round(pp.util * 100)); return `<div class="sat-row tone-${pp.tone}"><span class="who">${escapeHtml(pp.name)}</span><span class="sat-bar"><span style="width:${w}%"></span></span><span class="sat-tag">${pp.label}</span></div>`; }).join('');
     const callouts = [x.compromiseNote ? `<div class="callout">${escapeHtml(x.compromiseNote)}</div>` : '', x.fairnessNote ? `<div class="callout info">${escapeHtml(x.fairnessNote)}</div>` : '', x.relaxNote ? `<div class="callout info">${escapeHtml(x.relaxNote)}</div>` : ''].join('');
@@ -456,6 +465,12 @@
     if (x.runnerUp && r.runnerRow) { const rc = r.runnerRow.candidate; runnerHtml = `<div class="runner"><div class="r-poster" style="background:${posterGradient(rc, 165)}"></div><div><div class="r-title">${escapeHtml(rc.title)} <span style="color:var(--ink-3);font-weight:400">${escapeHtml(String(yearStr(rc)))}</span></div><div class="r-because">Lost because ${escapeHtml(x.runnerUp.because)}</div></div></div>`; }
     const ruledHtml = x.ruledOut.length ? `<ul class="ruled-list">${x.ruledOut.map((s) => `<li>${escapeHtml(s)}</li>`).join('')}</ul>` : `<p class="ruled-empty">Nothing off the table — everything was fair game tonight.</p>`;
     const excludeNote = state.exclude.size ? `<span class="result-note">Skipped ${state.exclude.size} you passed on.</span>` : '';
+    const isGuest = state.mode === 'room' && state.room && !state.room.host;
+    const hostControls = isGuest ? '' : `
+        <button class="lock-btn" id="lock-btn">Lock it in ✓</button>
+        <button class="reroll-btn" id="reroll-btn">Not feeling it — try again</button>
+        <button class="reroll-btn" id="seen-btn">We've seen it</button>`;
+    const guestNote = isGuest ? `<span class="result-note">The host settles, re-rolls, and locks tonight's pick.</span>` : '';
 
     stageEl.innerHTML = `
       <div class="verdict">
@@ -477,12 +492,9 @@
         </div>
       </div>
 
-      <div class="result-actions">
-        <button class="lock-btn" id="lock-btn">Lock it in ✓</button>
-        <button class="reroll-btn" id="reroll-btn">Not feeling it — try again</button>
-        <button class="reroll-btn" id="seen-btn">We've seen it</button>
+      <div class="result-actions">${hostControls}
         <button class="reroll-btn" id="copy-verdict-btn">Copy verdict</button>
-        ${excludeNote}
+        ${guestNote}${excludeNote}
       </div>
 
       <details class="reasoning">
@@ -499,9 +511,9 @@
       </details>`;
 
     stageEl.classList.add('show');
-    $('#lock-btn').addEventListener('click', lockIn);
-    $('#reroll-btn').addEventListener('click', () => { if (r.pick) state.exclude.add(r.pick.id); runResolve(true); });
-    $('#seen-btn').addEventListener('click', () => { loadMemory(); state.memory = E.markSeen(state.memory, r.pick.id, true); saveMemory(); state.exclude = new Set(); toast(`Marked “${r.pick.title}” as seen — finding another.`); if (poolOpen) renderPool(); runResolve(true); });
+    const lockBtn = $('#lock-btn'); if (lockBtn) lockBtn.addEventListener('click', () => { if (state.mode === 'room') Room.send({ t: 'lock' }); else lockIn(); });
+    const rerollBtn = $('#reroll-btn'); if (rerollBtn) rerollBtn.addEventListener('click', () => { if (state.mode === 'room') { Room.send({ t: 'reroll' }); } else { if (r.pick) state.exclude.add(r.pick.id); runResolve(true); } });
+    const seenBtn = $('#seen-btn'); if (seenBtn) seenBtn.addEventListener('click', () => { if (state.mode === 'room') { Room.send({ t: 'seen' }); } else { loadMemory(); state.memory = E.markSeen(state.memory, r.pick.id, true); saveMemory(); state.exclude = new Set(); toast(`Marked “${r.pick.title}” as seen — finding another.`); if (poolOpen) renderPool(); runResolve(true); } });
     $('#copy-verdict-btn').addEventListener('click', () => {
       const lines = x.perPerson.map((p) => `${p.name}: ${p.label}`).join(' · ');
       const text = `🎬 Tonight we're watching ${pick.title}${pick.year ? ` (${pick.year})` : ''}\n“${pick.hook}”\n${x.primary}\n${lines}\n— settled fairly with Standoff`;
@@ -515,12 +527,13 @@
   function injectSolidity(r) {
     const body = document.querySelector('#solidity-body');
     if (!body) return;
-    let a;
-    try { a = E.analyzeVerdict(engineCrew(), activeCatalog(), state.memory, r); }
-    catch (e) { document.querySelector('#solidity')?.remove(); return; }
+    // In a live room the client never sees others' tastes, so the server ships the
+    // analysis; solo mode computes it locally.
+    let a = state.mode === 'room' ? (r.analysis || null) : null;
+    if (!a) { try { a = E.analyzeVerdict(engineCrew(), activeCatalog(), state.memory, r); } catch (e) { document.querySelector('#solidity')?.remove(); return; } }
     if (!a) { document.querySelector('#solidity')?.remove(); return; }
     const cat = activeCatalog(), titleOf = (id) => (cat.find((c) => c.id === id) || {}).title || 'another option';
-    const N = state.crew.length, rob = a.robustness, strat = a.strategy;
+    const N = (r.pickRow ? r.pickRow.perPerson.length : r.ranking[0].perPerson.length), rob = a.robustness, strat = a.strategy;
 
     let robLine;
     if (rob.robust) robLine = `<b class="good">Rock-solid.</b> We stress-tested ${rob.tested} small changes of heart across the ${N} of you — not one would change tonight's pick.`;
@@ -536,7 +549,7 @@
     // Interactive counterfactual — the pivotal changes are already computed, so
     // let people *tug on a preference* and watch the pick flip, live.
     let whatIf = '';
-    if (!rob.robust && rob.pivotal.length) {
+    if (state.mode !== 'room' && !rob.robust && rob.pivotal.length) {
       const seen = new Set(); const chips = [];
       for (const pv of rob.pivotal) {
         if (seen.has(pv.who + pv.genre)) continue; seen.add(pv.who + pv.genre);
@@ -591,7 +604,7 @@
   }
 
   function buildBreakdown(r, colors) {
-    const names = crewNames();
+    const names = r.ranking[0].perPerson.map((p) => p.name);
     const legend = names.map((n, i) => `<span class="lg"><i style="background:${colors[i]}"></i>${escapeHtml(n)}</span>`).join('');
     const rows = r.ranking.slice(0, Math.min(8, r.ranking.length)).map((row, idx) => {
       const dots = row.perPerson.map((pp, i) => `<span class="pdot" style="left:${Math.round(pp.util * 100)}%;background:${colors[i]}" title="${escapeHtml(pp.name)}: ${Math.round(pp.util * 100)}"></span>`).join('');
@@ -735,6 +748,137 @@
   }
 
   /* =========================================================================
+   * Live rooms — everyone on their own screen, verdict on all at once.
+   * ====================================================================== */
+  const Room = (() => {
+    let sock = null;
+    function connect(then) {
+      let url;
+      try { url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host; } catch (e) { return then(false); }
+      try { sock = new WebSocket(url); } catch (e) { return then(false); }
+      let settled = false;
+      sock.addEventListener('open', () => { settled = true; then(true); });
+      sock.addEventListener('error', () => { if (!settled) { settled = true; then(false); } });
+      sock.addEventListener('close', () => { if (state.mode === 'room') { toast('Disconnected from the room.'); leaveRoom(true); } });
+      sock.addEventListener('message', (ev) => { let m; try { m = JSON.parse(ev.data); } catch (e) { return; } dispatch(m); });
+    }
+    return {
+      connect,
+      send: (o) => { if (sock && sock.readyState === 1) sock.send(JSON.stringify(o)); },
+      close: () => { try { if (sock) sock.close(); } catch (e) {} sock = null; },
+      connected: () => sock && sock.readyState === 1,
+    };
+  })();
+
+  const makeMe = (name) => ({ id: 'me', name: name || '', genres: {}, mood: { brain: 0.5, intensity: 0.5, levity: 0.5 }, runtimeCap: NO_LIMIT });
+  const mePayload = () => ({ name: state.me.name, genres: state.me.genres, mood: state.me.mood, runtimeCap: state.me.runtimeCap >= NO_LIMIT ? 999 : state.me.runtimeCap });
+  let syncTimer;
+  function syncMe() { if (state.mode !== 'room') return; clearTimeout(syncTimer); syncTimer = setTimeout(() => Room.send({ t: 'me', name: state.me.name, person: mePayload() }), 220); }
+
+  function dispatch(m) {
+    if (m.t === 'joined') enterRoom(m);
+    else if (m.t === 'presence' && state.room) { state.room.participants = m.room.participants; state.room.hostId = m.room.hostId; state.room.host = m.room.hostId === state.room.youId; renderRoster(); updateSettle(); }
+    else if (m.t === 'verdict') onVerdict(m);
+    else if (m.t === 'locked') onLocked();
+    else if (m.t === 'error') setRoomNote(m.msg);
+    else if (m.t === 'notice') toast(m.msg);
+  }
+
+  function enterRoom(m) {
+    state.mode = 'room';
+    state.room = { code: m.code, youId: m.youId, host: !!m.host, hostId: (m.room && m.room.hostId) || m.youId, participants: (m.room && m.room.participants) || [] };
+    if (!state.me) state.me = makeMe('');
+    state.crew = [state.me];
+    clearVerdict();
+    $('#crew-tabs').style.display = 'none';
+    closeRoomModal();
+    renderCrew(); updateSettle(); renderLedger();
+    toast(`In room ${m.code} — share the code to fill the couch.`);
+  }
+  function leaveRoom(silent) {
+    Room.close();
+    state.mode = 'solo'; state.room = null; state.me = null;
+    const c = state.crews.find((x) => x.id === state.crewId); state.crew = c ? c.crew : seedCrew();
+    clearVerdict(); loadMemory();
+    $('#crew-tabs').style.display = '';
+    renderCrewTabs(); renderCrew(); updateSettle(); renderLedger();
+    if (!silent) toast('Left the room.');
+  }
+
+  function renderRoom() {
+    const r = state.room;
+    crewEl.innerHTML = `
+      <div class="room-head">
+        <div class="room-code">Live room<b>${escapeHtml(r.code)}</b></div>
+        <div class="room-actions"><button id="room-invite">Copy invite link</button><button id="room-leave">Leave room</button></div>
+      </div>
+      <div class="room-roster" id="room-roster"></div>
+      <div class="crew room-you-grid">${personCard(state.me, 0)}</div>`;
+    renderRoster();
+  }
+  function renderRoster() {
+    const el = $('#room-roster'); if (!el || !state.room) return;
+    el.innerHTML = state.room.participants.map((p) => {
+      const [c1, c2] = SEATS[(p.avatarIndex || 0) % SEATS.length];
+      const you = p.id === state.room.youId, host = p.id === state.room.hostId;
+      const initial = (p.name || '?').trim()[0]?.toUpperCase() || '?';
+      return `<div class="rp ${p.ready ? 'ready' : ''}"><div class="rp-av" style="background:linear-gradient(135deg,${c1},${c2})" aria-hidden="true">${initial}</div><div class="rp-name">${escapeHtml(p.name || 'Guest')}${you ? ' <span class="rp-tag">you</span>' : ''}${host ? ' <span class="rp-tag host">host</span>' : ''}</div><div class="rp-dot" title="${p.ready ? 'ready' : 'setting up'}"></div></div>`;
+    }).join('');
+  }
+  function updateSettle() {
+    const label = resolveBtn.querySelector('.sb-label');
+    if (state.mode === 'room' && state.room) {
+      const ready = state.room.participants.filter((p) => p.ready).length;
+      if (state.room.host) { label.textContent = 'Settle it'; resolveBtn.disabled = ready < 2; }
+      else { label.textContent = 'Host settles'; resolveBtn.disabled = true; }
+    } else { label.textContent = 'Settle it'; resolveBtn.disabled = state.crew.length < MIN_PEOPLE; }
+  }
+  function onVerdict(m) {
+    state.result = m.result;
+    if (m.result && !m.result.empty) state.result.analysis = m.analysis || null;
+    state.locked = false;
+    const done = () => { renderStage(); if (!reduceMotion) stageEl.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+    if (!m.result || m.result.empty || reduceMotion) return done();
+    playReveal(m.title, done);
+  }
+  function onLocked() {
+    state.locked = true;
+    const b = $('#lock-btn'); if (b) { b.textContent = 'Locked in ✓'; b.disabled = true; }
+    const rr = $('#reroll-btn'); if (rr) rr.style.display = 'none';
+    const sb = $('#seen-btn'); if (sb) sb.style.display = 'none';
+    const v = stageEl.querySelector('.verdict'), poster = v && v.querySelector('.poster');
+    if (poster && !poster.querySelector('.locked-stamp')) { v.classList.add('locked'); const s = document.createElement('div'); s.className = 'locked-stamp'; s.textContent = 'Locked in'; poster.appendChild(s); }
+    Sound.lock();
+    toast('Locked in for the room.');
+  }
+  function copyInvite() {
+    const link = location.origin + location.pathname + '?room=' + state.room.code;
+    if (navigator.clipboard) navigator.clipboard.writeText(link).then(() => toast('Invite link copied.')).catch(() => window.prompt('Share this link:', link));
+    else window.prompt('Share this link:', link);
+  }
+
+  // room-entry modal
+  const roomModal = $('#room-modal');
+  const setRoomNote = (msg) => { const n = $('#rm-note'); if (n) n.textContent = msg || ''; };
+  function openRoomModal(prefillCode) { roomModal.classList.add('show'); setRoomNote(''); if (prefillCode) $('#rm-code').value = prefillCode.toUpperCase(); setTimeout(() => $('#rm-name').focus(), 50); }
+  function closeRoomModal() { roomModal.classList.remove('show'); }
+  function startRoom(kind, code) {
+    const name = ($('#rm-name').value || '').trim();
+    if (kind === 'join' && !(code || '').trim()) { setRoomNote('Enter a room code to join.'); return; }
+    state.me = makeMe(name);
+    const doSend = () => { if (kind === 'create') Room.send({ t: 'create', name, avatarIndex: 0, person: mePayload() }); else Room.send({ t: 'join', code: String(code).toUpperCase(), name, avatarIndex: 0, person: mePayload() }); };
+    if (Room.connected()) return doSend();
+    setRoomNote('Connecting…');
+    Room.connect((ok) => { if (!ok) { setRoomNote('Couldn’t reach the room server. Live rooms need the app running via “node server.js”, not opened as a file.'); return; } doSend(); });
+  }
+  $('#live-btn').addEventListener('click', () => openRoomModal());
+  $('#room-close').addEventListener('click', closeRoomModal);
+  roomModal.addEventListener('click', (e) => { if (e.target === roomModal) closeRoomModal(); });
+  $('#rm-create').addEventListener('click', () => startRoom('create'));
+  $('#rm-join-btn').addEventListener('click', () => startRoom('join', $('#rm-code').value));
+  $('#rm-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') startRoom('join', $('#rm-code').value); });
+
+  /* =========================================================================
    * Boot
    * ====================================================================== */
   // Load saved crews (migrating a legacy single crew if present), else seed one.
@@ -764,4 +908,8 @@
   renderLedger();
   initMotion();
   Sound.initToggle();
+
+  // An invite link (?room=CODE) opens the join dialog with the code prefilled.
+  const roomParam = new URLSearchParams(location.search).get('room');
+  if (roomParam) { try { history.replaceState(null, '', location.pathname); } catch (e) {} setTimeout(() => openRoomModal(roomParam), 350); }
 })();
