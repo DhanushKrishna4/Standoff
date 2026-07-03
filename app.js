@@ -750,8 +750,9 @@
   /* =========================================================================
    * Live rooms — everyone on their own screen, verdict on all at once.
    * ====================================================================== */
+  let reconnecting = false;
   const Room = (() => {
-    let sock = null;
+    let sock = null, deliberate = false, retries = 0;
     function connect(then) {
       let url;
       try { url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host; } catch (e) { return then(false); }
@@ -759,14 +760,23 @@
       let settled = false;
       sock.addEventListener('open', () => { settled = true; then(true); });
       sock.addEventListener('error', () => { if (!settled) { settled = true; then(false); } });
-      sock.addEventListener('close', () => { if (state.mode === 'room') { toast('Disconnected from the room.'); leaveRoom(true); } });
+      sock.addEventListener('close', () => { if (deliberate) { deliberate = false; return; } if (state.mode === 'room' && state.room) tryReconnect(); });
       sock.addEventListener('message', (ev) => { let m; try { m = JSON.parse(ev.data); } catch (e) { return; } dispatch(m); });
     }
+    function send(o) { if (sock && sock.readyState === 1) sock.send(JSON.stringify(o)); }
+    // A dropped connection (phone locked, wifi blip) shouldn't end the night —
+    // reconnect and quietly re-join the same room, preserving the verdict on screen.
+    function tryReconnect() {
+      if (retries >= 6) { retries = 0; toast('Lost the room — you were disconnected.'); leaveRoom(true); return; }
+      retries++;
+      toast(retries === 1 ? 'Reconnecting…' : `Reconnecting… (${retries})`);
+      setTimeout(() => connect((ok) => { if (!ok) return tryReconnect(); reconnecting = true; send({ t: 'join', code: state.room.code, name: state.me.name, avatarIndex: 0, person: mePayload() }); }), Math.min(900 * retries, 4000));
+    }
     return {
-      connect,
-      send: (o) => { if (sock && sock.readyState === 1) sock.send(JSON.stringify(o)); },
-      close: () => { try { if (sock) sock.close(); } catch (e) {} sock = null; },
+      connect, send,
+      close: () => { deliberate = true; try { if (sock) sock.close(); } catch (e) {} sock = null; },
       connected: () => sock && sock.readyState === 1,
+      resetRetries: () => { retries = 0; },
     };
   })();
 
@@ -776,11 +786,18 @@
   function syncMe() { if (state.mode !== 'room') return; clearTimeout(syncTimer); syncTimer = setTimeout(() => Room.send({ t: 'me', name: state.me.name, person: mePayload() }), 220); }
 
   function dispatch(m) {
-    if (m.t === 'joined') enterRoom(m);
+    if (m.t === 'joined') {
+      if (reconnecting && state.mode === 'room' && state.room) {
+        reconnecting = false; Room.resetRetries();
+        state.room.youId = m.youId; state.room.host = !!m.host;
+        if (m.room) { state.room.participants = m.room.participants; state.room.hostId = m.room.hostId; }
+        renderRoster(); updateSettle(); toast('Reconnected.');
+      } else enterRoom(m);
+    }
     else if (m.t === 'presence' && state.room) { state.room.participants = m.room.participants; state.room.hostId = m.room.hostId; state.room.host = m.room.hostId === state.room.youId; renderRoster(); updateSettle(); }
     else if (m.t === 'verdict') onVerdict(m);
     else if (m.t === 'locked') onLocked();
-    else if (m.t === 'error') setRoomNote(m.msg);
+    else if (m.t === 'error') { if (reconnecting) { reconnecting = false; toast(m.msg || 'The room is gone.'); leaveRoom(true); } else setRoomNote(m.msg); }
     else if (m.t === 'notice') toast(m.msg);
   }
 
@@ -859,9 +876,15 @@
 
   // room-entry modal
   const roomModal = $('#room-modal');
+  let roomLastFocus = null;
   const setRoomNote = (msg) => { const n = $('#rm-note'); if (n) n.textContent = msg || ''; };
-  function openRoomModal(prefillCode) { roomModal.classList.add('show'); setRoomNote(''); if (prefillCode) $('#rm-code').value = prefillCode.toUpperCase(); setTimeout(() => $('#rm-name').focus(), 50); }
-  function closeRoomModal() { roomModal.classList.remove('show'); }
+  function openRoomModal(prefillCode) { roomLastFocus = document.activeElement; roomModal.classList.add('show'); setRoomNote(''); if (prefillCode) $('#rm-code').value = prefillCode.toUpperCase(); setTimeout(() => $('#rm-name').focus(), 50); }
+  function closeRoomModal() { roomModal.classList.remove('show'); if (roomLastFocus && roomLastFocus.focus) roomLastFocus.focus(); }
+  document.addEventListener('keydown', (e) => {
+    if (!roomModal.classList.contains('show')) return;
+    if (e.key === 'Escape') { closeRoomModal(); return; }
+    if (e.key === 'Tab') { const f = roomModal.querySelectorAll('button, a[href], input, [tabindex]:not([tabindex="-1"])'); if (!f.length) return; const first = f[0], last = f[f.length - 1]; if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); } }
+  });
   function startRoom(kind, code) {
     const name = ($('#rm-name').value || '').trim();
     if (kind === 'join' && !(code || '').trim()) { setRoomNote('Enter a room code to join.'); return; }
