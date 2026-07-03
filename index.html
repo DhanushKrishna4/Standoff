@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Standoff — settle what to watch</title>
+  <meta name="description" content="Two to four people, four different tastes, one screen. Standoff merges everyone's mood, breaks the tie fairly, and shows exactly why." />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#f3b23e" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Standoff — settle what to watch" />
+  <meta property="og:description" content="Merges everyone's mood, breaks the tie fairly, and shows exactly why — and keeps it fair across nights." />
+  <meta name="twitter:card" content="summary" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..800&family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>" />
+</head>
+<body>
+  <div class="noise" aria-hidden="true"></div>
+  <div class="glow" id="glow" aria-hidden="true"></div>
+  <div class="progress" id="progress" aria-hidden="true"></div>
+
+  <!-- ============================== HERO ============================== -->
+  <header class="hero" id="hero">
+    <nav class="topbar">
+      <a class="brand" href="#top"><span class="brand-dot" aria-hidden="true"></span>Standoff</a>
+      <button class="ghost-btn" id="how-btn">How it works</button>
+    </nav>
+
+    <div class="hero-body">
+      <p class="kicker" data-reveal>The&nbsp;“what do we watch”&nbsp;deadlock breaker</p>
+      <h1 class="hero-title" id="hero-title">
+        <span class="line"><span>End the</span></span>
+        <span class="line"><span>movie-night</span></span>
+        <span class="line"><span class="ital">standoff.</span></span>
+      </h1>
+      <p class="hero-sub" data-reveal>Two to four people, four different tastes, one screen. It merges everyone's
+        mood, breaks the tie fairly, and shows exactly why — and keeps it fair across nights.</p>
+      <a class="hero-cta" href="#room" data-reveal><span>Assemble the room</span><span class="arr" aria-hidden="true">↓</span></a>
+    </div>
+
+    <div class="ticker" aria-hidden="true">
+      <div class="ticker-track">
+        <span>No more endless scrolling</span><span class="star">✦</span>
+        <span>Everyone gets a fair shake</span><span class="star">✦</span>
+        <span>It shows its work</span><span class="star">✦</span>
+        <span>Nobody quietly loses every time</span><span class="star">✦</span>
+        <span>No more endless scrolling</span><span class="star">✦</span>
+        <span>Everyone gets a fair shake</span><span class="star">✦</span>
+        <span>It shows its work</span><span class="star">✦</span>
+        <span>Nobody quietly loses every time</span><span class="star">✦</span>
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+    <!-- ============================ THE ROOM =========================== -->
+    <section class="sect" id="room">
+      <div class="sect-head" data-reveal>
+        <span class="num">01</span>
+        <h2 class="sect-title">The room</h2>
+        <div class="sect-aside">
+          <p class="sect-hint">Add who's watching. Tap a genre to cycle <b>like → love → dislike → veto</b>, then set tonight's mood.</p>
+          <button class="text-link" id="example-btn">Load an example crew <span aria-hidden="true">↗</span></button>
+        </div>
+      </div>
+      <div class="crew-tabs" id="crew-tabs" aria-label="Your crews"></div>
+      <div class="crew" id="crew"></div>
+    </section>
+
+    <!-- ========================== THE SHORTLIST ======================== -->
+    <section class="sect tight" id="pool-sect">
+      <button class="disclose" id="pool-head" aria-expanded="false" aria-controls="pool-body">
+        <span class="num">02</span>
+        <span class="sect-title">The shortlist</span>
+        <span class="disclose-meta" id="pool-count">— the full library</span>
+        <span class="chev" aria-hidden="true">↓</span>
+      </button>
+      <div class="pool-body" id="pool-body" hidden></div>
+    </section>
+
+    <!-- ============================= SETTLE ============================ -->
+    <div class="settle" data-reveal>
+      <button class="settle-btn" id="resolve-btn">
+        <span class="sb-fill" aria-hidden="true"></span>
+        <span class="sb-label">Settle it</span>
+      </button>
+      <div class="settle-side">
+        <button class="ghost-btn" id="share-btn" title="Copy a link that restores this exact setup"><span aria-hidden="true">↗</span> Share setup</button>
+        <div class="legend">
+          <span class="lg-item"><i class="sw love"></i>Love</span>
+          <span class="lg-item"><i class="sw like"></i>Like</span>
+          <span class="lg-item"><i class="sw dislike"></i>Dislike</span>
+          <span class="lg-item"><i class="sw veto"></i>Veto</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================= VERDICT =========================== -->
+    <section class="stage" id="stage" aria-live="polite"></section>
+
+    <!-- ============================= LEDGER ============================ -->
+    <section class="sect tight" id="ledger">
+      <button class="disclose" id="ledger-head" aria-expanded="false" aria-controls="ledger-body">
+        <span class="num">03</span>
+        <span class="sect-title">Fairness ledger</span>
+        <span class="disclose-meta" id="ledger-crew">— this crew</span>
+        <span class="chev" aria-hidden="true">↓</span>
+      </button>
+      <div class="ledger-body" id="ledger-body" hidden>
+        <div class="ledger-cols">
+          <div>
+            <h4 class="mini-h">Who's owed a pick</h4>
+            <div id="debt-list"></div>
+            <p class="empty-note" id="debt-empty" style="display:none">No compromise debt yet — nobody's had to settle. Lock in a few picks and this fills in.</p>
+          </div>
+          <div>
+            <h4 class="mini-h">Recent verdicts</h4>
+            <div id="history-list"></div>
+            <p class="empty-note" id="history-empty" style="display:none">Nothing locked in yet.</p>
+          </div>
+        </div>
+        <button class="reset-ledger" id="reset-ledger">Reset this crew's memory</button>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>A single, dependency-free page — the decision engine is a pure function.
+      See <a href="README.md">README.md</a> for the social-choice reasoning; run
+      <code>node engine.test.js</code> for the 19 tests.</p>
+  </footer>
+
+  <!-- split-flap reveal -->
+  <div class="reveal" id="reveal" aria-hidden="true">
+    <div class="reveal-inner">
+      <div class="reveal-label" id="reveal-label">Tallying the room…</div>
+      <div class="flap-board" id="flap-board"></div>
+      <div class="reveal-sub" id="reveal-sub"></div>
+    </div>
+  </div>
+
+  <!-- how it works -->
+  <div class="modal-scrim" id="how-modal">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="how-h">
+      <button class="close-x" id="how-close" aria-label="Close">✕</button>
+      <span class="kicker">Under the hood</span>
+      <h3 id="how-h">How it actually decides</h3>
+      <p class="sub">Most "group pickers" average everyone's ratings. That quietly rewards the
+        blandest option and lets one grump tank the vote. This does something more careful.</p>
+
+      <p><b>Why not just average?</b> Averaging is <em>utilitarian</em> — it maximises the total,
+        which is how you end up watching the film everyone finds "fine" instead of the one three
+        people love and one can live with. For a shared couch, the goal isn't the highest average —
+        it's that <b>nobody has a bad night</b>.</p>
+
+      <ol class="method-list">
+        <li><b>Feasibility first.</b> A <b>veto</b> is a hard no — that genre is gone. Runtime caps
+          filter too, and only stretch if the menu would otherwise be empty.</li>
+        <li><b>Everyone on the same scale.</b> Each person's score is normalised against their
+          <em>own</em> range, so a harsh rater can't dominate a generous one by using different numbers.</li>
+        <li><b>Fair, not just popular.</b> Options are judged on the <b>floor</b> (how happy the
+          least-keen person is — weighted highest), overall welfare, the Nash balance, and head-to-head
+          wins (a Condorcet check).</li>
+        <li><b>Memory across nights.</b> Whoever falls behind on lifetime satisfaction is owed; next
+          time it's close, the tie tips toward them.</li>
+        <li><b>Honest tie-breaks.</b> A true dead heat says <em>"coin flip"</em> rather than inventing
+          a reason.</li>
+      </ol>
+
+      <h4>The five-method cross-check</h4>
+      <p>It also runs the pick past the five canonical aggregation methods — each a different idea of
+        fairness. When four or five agree, that's about as objective as group choice gets. When they
+        split, or there's no Condorcet winner at all (a genuine cycle), it shows you the disagreement.</p>
+
+      <h4>Is it solid — and could it be gamed?</h4>
+      <p>Every verdict is stress-tested: would any single change of heart flip it, and could anyone get
+        a better night by <em>misreporting</em> their taste? It checks each time and tells you the
+        truth — including when the head-to-head favourite <em>isn't</em> the fair pick.</p>
+    </div>
+  </div>
+
+  <button class="sound-toggle" id="sound-toggle" aria-label="Toggle sound" aria-pressed="true" title="Sound">🔊</button>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="catalog.js"></script>
+  <script src="engine.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

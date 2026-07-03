@@ -1,0 +1,7 @@
+# Editor / OS cruft
+.DS_Store
+*.log
+Thumbs.db
+
+# Local tooling / preview config (not part of the app)
+.claude/
