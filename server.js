@@ -35,11 +35,67 @@ let saveTimer = null;
 const saveDb = () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => { try { fs.writeFileSync(DATA_FILE, JSON.stringify(db)); } catch (e) {} }, 200); };
 const memFor = (code) => (db[code] = db[code] || { cumulative: {}, debt: {}, history: [], seen: [], nights: 0 });
 
+// ---- accounts + cloud persistence (item 3) -----------------------------------
+// A real backend with lightweight auth, built on this same zero-dependency Node
+// server (crypto for hashed passphrases + tokens; JSON on disk) rather than a
+// third-party DB — so the app stays a single dependency-free page. An account
+// stores one blob (crews, ledgers, seen-lists, custom titles); accounts are
+// opt-in and the app keeps working with no account at all.
+const ACC_FILE = path.join(ROOT, '.standoff-accounts.json');
+let accounts = {};
+try { accounts = JSON.parse(fs.readFileSync(ACC_FILE, 'utf8')) || {}; } catch (e) {}
+let accTimer = null;
+const saveAccounts = () => { clearTimeout(accTimer); accTimer = setTimeout(() => { try { fs.writeFileSync(ACC_FILE, JSON.stringify(accounts)); } catch (e) {} }, 200); };
+const normEmail = (e) => String(e || '').trim().toLowerCase();
+const hashPass = (pass, salt) => crypto.scryptSync(String(pass), salt, 32).toString('hex');
+const newToken = () => crypto.randomBytes(24).toString('hex');
+const sameHash = (a, b) => { try { return crypto.timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex')); } catch (e) { return false; } };
+const accountFor = (token) => token && Object.keys(accounts).find((e) => (accounts[e].tokens || []).includes(token));
+
+function readJson(req, cb) {
+  let body = '', over = false;
+  req.on('data', (c) => { body += c; if (body.length > 1024 * 1024) { over = true; req.destroy(); } });
+  req.on('end', () => { if (over) return cb(null); try { cb(JSON.parse(body || '{}')); } catch (e) { cb(null); } });
+  req.on('error', () => cb(null));
+}
+const sendJson = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
+
+function handleApi(req, res, u) {
+  const m = req.method;
+  if (u === '/api/signup' && m === 'POST') return readJson(req, (b) => {
+    if (!b) return sendJson(res, 400, { error: 'Bad request.' });
+    const email = normEmail(b.email), pass = String(b.pass || '');
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return sendJson(res, 400, { error: 'Enter a valid email.' });
+    if (pass.length < 8) return sendJson(res, 400, { error: 'Passphrase must be at least 8 characters.' });
+    if (accounts[email]) return sendJson(res, 409, { error: 'That email already has an account — log in instead.' });
+    const salt = crypto.randomBytes(16).toString('hex'), token = newToken();
+    accounts[email] = { salt, hash: hashPass(pass, salt), tokens: [token], data: null };
+    saveAccounts();
+    return sendJson(res, 200, { token, email, data: null });
+  });
+  if (u === '/api/login' && m === 'POST') return readJson(req, (b) => {
+    if (!b) return sendJson(res, 400, { error: 'Bad request.' });
+    const email = normEmail(b.email), a = accounts[email];
+    if (!a || !sameHash(a.hash, hashPass(b.pass, a.salt))) return sendJson(res, 401, { error: 'Wrong email or passphrase.' });
+    const token = newToken(); a.tokens = (a.tokens || []).concat(token).slice(-10); saveAccounts();
+    return sendJson(res, 200, { token, email, data: a.data });
+  });
+  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  const email = accountFor(token);
+  if (!email) return sendJson(res, 401, { error: 'Not signed in.' });
+  const a = accounts[email];
+  if (u === '/api/data' && m === 'GET') return sendJson(res, 200, { email, data: a.data });
+  if (u === '/api/data' && m === 'PUT') return readJson(req, (b) => { if (!b) return sendJson(res, 400, { error: 'Bad request.' }); a.data = b.data; saveAccounts(); return sendJson(res, 200, { ok: true }); });
+  if (u === '/api/logout' && m === 'POST') { a.tokens = (a.tokens || []).filter((t) => t !== token); saveAccounts(); return sendJson(res, 200, { ok: true }); }
+  return sendJson(res, 404, { error: 'Not found.' });
+}
+
 // ---- static files (no-cache, path-guarded) -----------------------------------
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.md': 'text/markdown; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json', '.py': 'text/plain; charset=utf-8' };
 const server = http.createServer((req, res) => {
   let u = decodeURIComponent((req.url || '/').split('?')[0]);
   if (u === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); return res.end('ok'); } // deploy health check
+  if (u.startsWith('/api/')) return handleApi(req, res, u); // accounts + cloud persistence
   if (u === '/' || u.startsWith('/room/') || u.startsWith('/join')) u = '/index.html'; // pretty routes → app
   const fp = path.normalize(path.join(ROOT, u));
   if (!fp.startsWith(ROOT)) { res.writeHead(403); return res.end('forbidden'); }

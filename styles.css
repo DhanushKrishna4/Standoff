@@ -227,6 +227,10 @@ main { position: relative; z-index: 2; }
 .rm-code { flex: 1; text-transform: uppercase; letter-spacing: 6px; font-family: var(--font-mono) !important; text-align: center; font-size: 20px !important; }
 .rm-join .af-cancel { white-space: nowrap; }
 .rm-note { margin-top: 14px; font-size: 13px; color: var(--gold-2); min-height: 18px; }
+.rm-note.err { color: var(--crimson); }
+.acc-status { display: flex; align-items: center; gap: 9px; font-size: 14.5px; color: var(--ink); margin: 6px 0 18px; }
+.acc-status b { font-weight: 600; }
+.acc-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--green); box-shadow: 0 0 8px var(--green); }
 
 /* ============================== crew tabs =========================== */
 .crew-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 26px; }

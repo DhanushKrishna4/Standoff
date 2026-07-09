@@ -83,8 +83,9 @@
     const m = store.get(memKey(state.crewId)) || {};
     state.memory = { cumulative: m.cumulative || {}, debt: m.debt || {}, history: m.history || [], seen: m.seen || [], nights: m.nights || 0 };
   }
-  const saveMemory = () => store.set(memKey(state.crewId), state.memory);
-  const savePool = () => store.set(POOL_KEY, state.pool);
+  let accountPush = () => {};   // set by the Account module when signed in — pushes local data to the cloud
+  const saveMemory = () => { store.set(memKey(state.crewId), state.memory); accountPush(); };
+  const savePool = () => { store.set(POOL_KEY, state.pool); accountPush(); };
   // Persist saved crews — but never the throwaway "example" demo crew.
   const persistCrews = () => store.set(CREWS_KEY, state.crews.filter((c) => !c.ephemeral));
   function saveCrew() {
@@ -92,6 +93,7 @@
     if (c) c.crew = state.crew;
     persistCrews();
     if (c && !c.ephemeral) store.set(ACTIVE_KEY, state.crewId);
+    accountPush();
   }
 
   /* ---- first-class crews: save, name, switch ---------------------------- */
@@ -1027,6 +1029,102 @@
   $('#rm-create').addEventListener('click', () => startRoom('create'));
   $('#rm-join-btn').addEventListener('click', () => startRoom('join', $('#rm-code').value));
   $('#rm-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') startRoom('join', $('#rm-code').value); });
+
+  /* =========================================================================
+   * Accounts + cloud sync (item 3) — opt-in; local mode is the default.
+   * A passphrase account (served by our own Node server, /api/*) syncs this
+   * device's crews, ledgers, seen-lists and custom titles to the cloud.
+   * ====================================================================== */
+  const SESSION_KEY = 'standoff:session:v1';
+  const Account = (() => {
+    let session = store.get(SESSION_KEY);                        // { token, email } | null
+    const modal = $('#account-modal'), body = $('#account-body'), btn = $('#account-btn');
+    const apiBase = () => (window.STANDOFF_API || '').trim().replace(/\/$/, '') || location.origin;
+
+    async function api(path, method, payload) {
+      const res = await fetch(apiBase() + path, {
+        method: method || 'GET',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, session ? { Authorization: 'Bearer ' + session.token } : {}),
+        body: payload ? JSON.stringify(payload) : undefined,
+      });
+      let data = {}; try { data = await res.json(); } catch (e) {}
+      if (!res.ok) throw new Error(data.error || ('Request failed (' + res.status + ').'));
+      return data;
+    }
+
+    function snapshot() {
+      const crews = state.crews.filter((c) => !c.ephemeral).map((c) => ({ id: c.id, name: c.name, crew: c.crew }));
+      const memories = {};
+      crews.forEach((c) => { const m = store.get(memKey(c.id)); if (m) memories[c.id] = m; });
+      return { v: 1, crews, active: state.crewId, pool: state.pool, memories };
+    }
+    function restore(data) {
+      if (!data || !Array.isArray(data.crews) || !data.crews.length) return false;
+      store.set(CREWS_KEY, data.crews);
+      if (data.pool) store.set(POOL_KEY, data.pool);
+      if (data.active) store.set(ACTIVE_KEY, data.active);
+      if (data.memories) Object.keys(data.memories).forEach((id) => store.set(memKey(id), data.memories[id]));
+      return true;
+    }
+
+    let pushTimer = null;
+    function push() {
+      if (!session) return;
+      clearTimeout(pushTimer);
+      pushTimer = setTimeout(() => { api('/api/data', 'PUT', { data: snapshot() }).catch(() => {}); }, 900);
+    }
+
+    const renderBtn = () => { if (btn) btn.textContent = session ? ('☁ ' + session.email.split('@')[0]) : 'Sign in ☁'; };
+
+    function renderBody(msg, err) {
+      if (session) {
+        body.innerHTML =
+          '<div class="acc-status"><span class="acc-dot"></span>Signed in as <b>' + escapeHtml(session.email) + '</b> — crews sync automatically.</div>' +
+          '<div class="rm-join"><button class="af-cancel" id="acc-pull" style="flex:1">Refresh from cloud</button><button class="af-cancel" id="acc-logout" style="flex:1">Log out</button></div>' +
+          (msg ? '<p class="rm-note' + (err ? ' err' : '') + '">' + escapeHtml(msg) + '</p>' : '');
+        $('#acc-logout').addEventListener('click', logout);
+        $('#acc-pull').addEventListener('click', async () => {
+          try { const r = await api('/api/data'); if (restore(r.data)) { toast('Pulled your latest crews.'); location.reload(); } else toast('Nothing newer in the cloud yet.'); }
+          catch (e) { renderBody(e.message, true); }
+        });
+      } else {
+        body.innerHTML =
+          '<label class="rm-field"><span>Email</span><input type="email" id="acc-email" autocomplete="username" placeholder="you@example.com" /></label>' +
+          '<label class="rm-field"><span>Passphrase (8+ characters)</span><input type="password" id="acc-pass" autocomplete="current-password" placeholder="a passphrase only you know" /></label>' +
+          '<div class="rm-join"><button class="af-submit" id="acc-signup" style="flex:1">Create account</button><button class="af-cancel" id="acc-login" style="flex:1">Log in</button></div>' +
+          '<p class="rm-note' + (err ? ' err' : '') + '">' + escapeHtml(msg || '') + '</p>';
+        $('#acc-signup').addEventListener('click', () => submit('signup'));
+        $('#acc-login').addEventListener('click', () => submit('login'));
+        $('#acc-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') submit('login'); });
+      }
+    }
+
+    async function submit(kind) {
+      const email = ($('#acc-email').value || '').trim(), pass = $('#acc-pass').value || '';
+      try {
+        const r = await api('/api/' + kind, 'POST', { email, pass });
+        session = { token: r.token, email: r.email }; store.set(SESSION_KEY, session); renderBtn();
+        if (restore(r.data)) { toast('Signed in — pulling your crews.'); location.reload(); return; }
+        push();                                                  // server empty → seed from this device
+        renderBody('All set — this device is now syncing.');
+        toast('Signed in — your crews now sync.');
+      } catch (e) { renderBody(e.message || 'Something went wrong.', true); }
+    }
+    async function logout() {
+      try { await api('/api/logout', 'POST'); } catch (e) {}
+      session = null; store.del(SESSION_KEY); renderBtn(); renderBody('Signed out — local-only on this device.'); toast('Signed out.');
+    }
+
+    function open() { renderBody(); modal.classList.add('show'); setTimeout(() => { const el = $('#acc-email') || $('#acc-pull'); if (el) el.focus(); }, 40); }
+    const close = () => modal.classList.remove('show');
+
+    if (btn) btn.addEventListener('click', open);
+    if ($('#account-close')) $('#account-close').addEventListener('click', close);
+    if (modal) modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+    accountPush = push;                                          // saves now push to the cloud when signed in
+    renderBtn();
+    return { push, open };
+  })();
 
   /* =========================================================================
    * Boot

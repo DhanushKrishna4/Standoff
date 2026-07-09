@@ -5,3 +5,4 @@ Thumbs.db
 
 # Runtime data written by the live-rooms server
 .standoff-rooms.json
+.standoff-accounts.json

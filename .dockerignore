@@ -9,3 +9,4 @@ scripts
 *.test.js
 catalog.generated.js
 README.md
+.standoff-accounts.json
