@@ -261,6 +261,8 @@ main { position: relative; z-index: 2; }
 
 .field-label { font-family: var(--font-mono); font-size: 10px; letter-spacing: 1.6px; text-transform: uppercase; color: var(--ink-3); margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
 .genres { display: flex; flex-wrap: wrap; gap: 6px; }
+.import-link { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.4px; text-transform: none; color: var(--gold); cursor: pointer; font-weight: 500; white-space: nowrap; }
+.import-link:hover { color: var(--gold-2); }
 .chip { font-family: var(--font-ui); font-size: 12.5px; font-weight: 500; color: var(--ink-2); border: 1px solid var(--line-2); background: transparent; border-radius: 999px; padding: 5px 12px; cursor: pointer; user-select: none; transition: all 0.16s var(--ease); }
 .chip:hover { border-color: var(--ink-3); transform: translateY(-1px); }
 .chip[data-stance="like"]    { background: rgba(69,203,180,0.14);  border-color: rgba(69,203,180,0.5);  color: #b6efe4; }
@@ -323,6 +325,13 @@ input[type="range"]::-moz-range-thumb { width: 13px; height: 13px; border-radius
 .pi-del { flex: none; font-size: 13px; color: var(--ink-3); background: none; border: none; cursor: pointer; padding: 4px 7px; border-radius: 7px; transition: all 0.15s; }
 .pi-del:hover { color: var(--crimson); background: rgba(239,91,86,0.12); }
 .pool-item.custom .pi-title::after { content: " ✦"; color: var(--gold); }
+.pool-item.unwatch { opacity: 0.4; }
+.pool-item.unwatch .pi-title { text-decoration: line-through; text-decoration-color: var(--line-2); }
+
+/* streaming-availability control (item 5) */
+.watch-control { border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; margin-bottom: 16px; background: var(--panel); }
+.watch-region { background: var(--bg); border: 1px solid var(--line-2); border-radius: 8px; color: var(--ink); font-family: var(--font-ui); font-size: 13px; padding: 6px 10px; }
+.watch-region:focus { outline: none; border-color: var(--gold); }
 
 /* ============================== interlude (marquee card) ============ */
 .interlude { position: relative; max-width: var(--maxw); margin: clamp(80px, 13vh, 170px) auto 0; padding: 0 var(--pad); }

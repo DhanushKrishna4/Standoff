@@ -75,7 +75,12 @@ test('normalisation: a harsh rater cannot dominate via scale alone', () => {
     { name: 'Generous', genres: { Comedy: 'love', Drama: 'like' }, mood: { brain: 0.5, intensity: 0.5, levity: 0.5 } },
     { name: 'Harsh', genres: { Comedy: 'like', Drama: 'neutral' }, mood: { brain: 0.5, intensity: 0.5, levity: 0.5 } },
   ];
-  const feasible = CATALOG.filter((c) => ['booksmart', 'little-women', 'b99'].includes(c.id));
+  // Self-contained candidates (not tied to catalog data) with distinct profiles.
+  const feasible = [
+    { id: 'c1', genres: ['Comedy'], brain: 0.40, intensity: 0.40, levity: 0.85, runtime: 102, score: 84 },
+    { id: 'c2', genres: ['Drama', 'Romance'], brain: 0.65, intensity: 0.35, levity: 0.55, runtime: 135, score: 88 },
+    { id: 'c3', genres: ['Comedy', 'Crime'], brain: 0.30, intensity: 0.35, levity: 0.90, runtime: 22, score: 82 },
+  ];
   const { norm } = E.normaliseUtilities(crew, feasible);
   // Every person's own best option is exactly 1 and worst exactly 0 — scale removed.
   for (const p of crew) {
@@ -153,7 +158,13 @@ test('resolve: an impossible runtime cap relaxes rather than returning nothing',
     { name: 'A', genres: {}, mood: { brain: 0.5, intensity: 0.5, levity: 0.5 }, runtimeCap: 20 },
     { name: 'B', genres: {}, mood: { brain: 0.5, intensity: 0.5, levity: 0.5 }, runtimeCap: 20 },
   ];
-  const res = E.resolve(crew, CATALOG, {}, { debt: {}, history: [] });
+  // Self-contained menu where every title is far over the cap, so 20 min is
+  // genuinely impossible and a relaxation is forced (independent of catalog data).
+  const menu = [
+    { id: 'long1', genres: ['Drama'], brain: 0.5, intensity: 0.5, levity: 0.5, runtime: 120, score: 85 },
+    { id: 'long2', genres: ['Action'], brain: 0.5, intensity: 0.6, levity: 0.4, runtime: 140, score: 84 },
+  ];
+  const res = E.resolve(crew, menu, {}, { debt: {}, history: [] });
   assert.ok(res.pick, 'must return a real choice, not an empty menu');
   assert.ok(res.relaxations.length >= 1, 'a relaxation should be recorded');
   assert.strictEqual(res.relaxations[0].type, 'runtime', 'and it should be the runtime cap');
@@ -186,19 +197,22 @@ test('resolve: a dead-even tie is a declared coin flip — until fairness memory
   const B = { name: 'B', genres: { Romance: 'love', Action: 'dislike' }, mood: { brain: 0.5, intensity: 0.5, levity: 0.5 }, runtimeCap: 180 };
   const crew = [A, B];
 
-  // Narrow the menu to two mirror-image options: A's pick vs B's pick.
-  const keep = new Set(['john-wick', 'amelie']);
-  const exclude = CATALOG.map((c) => c.id).filter((id) => !keep.has(id));
+  // Two mirror-image options (self-contained, not catalog-dependent): A's kind
+  // of film vs B's kind, otherwise identical.
+  const menu = [
+    { id: 'action-pick', genres: ['Action'], brain: 0.5, intensity: 0.7, levity: 0.4, runtime: 110, score: 85 },
+    { id: 'romance-pick', genres: ['Romance'], brain: 0.5, intensity: 0.3, levity: 0.6, runtime: 110, score: 85 },
+  ];
 
-  const noHistory = E.resolve(crew, CATALOG, { exclude }, { debt: {}, history: [] });
+  const noHistory = E.resolve(crew, menu, {}, { debt: {}, history: [] });
   assert.ok(noHistory.tieBreak.happened, 'a symmetric standoff should register as a tie');
   assert.ok(noHistory.tieBreak.coinFlip, 'and with no history it is honestly a coin flip');
 
-  const owedA = E.resolve(crew, CATALOG, { exclude }, { debt: { A: 2, B: 0 }, history: [] });
-  assert.strictEqual(owedA.pick.id, 'john-wick', "A is owed → the tie breaks to A's kind of film");
+  const owedA = E.resolve(crew, menu, {}, { debt: { A: 2, B: 0 }, history: [] });
+  assert.strictEqual(owedA.pick.id, 'action-pick', "A is owed → the tie breaks to A's kind of film");
 
-  const owedB = E.resolve(crew, CATALOG, { exclude }, { debt: { B: 2, A: 0 }, history: [] });
-  assert.strictEqual(owedB.pick.id, 'amelie', "B is owed → the tie breaks the other way");
+  const owedB = E.resolve(crew, menu, {}, { debt: { B: 2, A: 0 }, history: [] });
+  assert.strictEqual(owedB.pick.id, 'romance-pick', "B is owed → the tie breaks the other way");
 });
 
 /* ---- Integration: full explanation is populated ------------------------ */

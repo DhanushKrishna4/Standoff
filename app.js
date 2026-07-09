@@ -28,6 +28,7 @@
   const ACTIVE_KEY = 'standoff:active:v1'; // active crew id
   const LEGACY_CREW_KEY = 'standoff:crew:v3';
   const POOL_KEY = 'standoff:pool:v1';
+  const WATCH_KEY = 'standoff:watch:v1';   // { region, services:[] } — streaming-availability filter
   const MUTE_KEY = 'standoff:muted';
   const memKey = (id) => 'standoff:mem:v4:' + id; // ledger keyed by stable crew id
   const uid = () => 'p' + Math.random().toString(36).slice(2, 8);
@@ -146,13 +147,39 @@
   }
 
   const fullLibrary = () => window.CATALOG.concat(state.pool.custom);
-  const activeCatalog = () => { const off = new Set(state.pool.disabled); return window.CATALOG.filter((c) => !off.has(c.id)).concat(state.pool.custom); };
+  // --- streaming-availability filter (item 5) — activates once catalog entries
+  // carry `providers` (from scripts/build-catalog.mjs); a no-op until then. -----
+  const hasProviderData = () => window.CATALOG.some((c) => c.providers);
+  const watchRegions = () => { const s = new Set(); window.CATALOG.forEach((c) => c.providers && Object.keys(c.providers).forEach((r) => s.add(r))); return [...s].sort(); };
+  const watchServices = (region) => { const s = new Set(); window.CATALOG.forEach((c) => c.providers && (c.providers[region] || []).forEach((n) => s.add(n))); return [...s].sort(); };
+  const watchable = (c) => {
+    const w = state.watch;
+    if (!w || !w.services || !w.services.length) return true;   // filter off → everything in play
+    if (!c.providers) return true;                              // unknown availability → don't hide it
+    return (c.providers[w.region] || []).some((n) => w.services.includes(n));
+  };
+  const saveWatch = () => store.set(WATCH_KEY, state.watch);
+  const activeCatalog = () => {
+    const off = new Set(state.pool.disabled);
+    const base = window.CATALOG.filter((c) => !off.has(c.id)).concat(state.pool.custom);
+    const w = state.watch;
+    if (!w || !w.services || !w.services.length) return base;
+    const only = base.filter(watchable);
+    return only.length >= 4 ? only : base;     // never strand the crew with too few options
+  };
 
   /* ---- helpers ---------------------------------------------------------- */
   function posterGradient(cand, angle = 155) {
     const gs = cand.genres || [];
     const h1 = GENRE_HUE[gs[0]] ?? 250, h2 = GENRE_HUE[gs[1]] ?? (h1 + 40);
     return `linear-gradient(${angle}deg, hsl(${h1} 55% 32%) 0%, hsl(${h2} 50% 20%) 62%, #100b08 100%)`;
+  }
+  // Real poster art when a catalog entry has one (from scripts/build-catalog.mjs),
+  // with the genre gradient behind as a loading/fallback layer. Single-quoted
+  // url() so it's safe inside a double-quoted inline style attribute.
+  function posterBg(cand, angle = 155) {
+    const grad = posterGradient(cand, angle);
+    return cand && cand.poster ? `url('${cand.poster}') center/cover no-repeat, ${grad}` : grad;
   }
   const monogram = (t) => (String(t).replace(/^(The|A|An)\s+/i, '')[0] || String(t)[0] || '?').toUpperCase();
   const runtimeStr = (c) => (c.kind === 'Series' ? `~${c.runtime} min/ep` : `${c.runtime} min`);
@@ -244,7 +271,7 @@
           <input class="name-input" value="${escapeHtml(p.name)}" placeholder="${placeholder}" data-pid="${p.id}" data-field="name" maxlength="18" aria-label="Name" />
           ${canRemove ? `<button class="remove-person" data-pid="${p.id}" title="Remove" aria-label="Remove ${escapeHtml(p.name || 'person')}">×</button>` : ''}
         </div>
-        <div><div class="field-label">Genres</div><div class="genres">${chips}</div></div>
+        <div><div class="field-label">Genres <label class="import-link" title="Import a Letterboxd or IMDb ratings CSV to set genres automatically">↥ Import ratings<input type="file" accept=".csv,text/csv" data-import="${p.id}" hidden /></label></div><div class="genres">${chips}</div></div>
         <div><div class="field-label">Tonight's mood</div><div class="moods">${moods}</div></div>
         <div>
           <div class="field-label">Runtime tonight <span class="runtime-val" data-pid="${p.id}">${capLabel}</span></div>
@@ -256,6 +283,63 @@
   const findPerson = (pid) => state.crew.find((p) => p.id === pid);
 
   const persist = () => { if (state.mode === 'room') syncMe(); else saveCrew(); };
+
+  /* ---- import taste from a Letterboxd / IMDb ratings CSV (item 6) ----------
+   * No API key / OAuth: the user exports their ratings (Letterboxd Settings →
+   * Import & Export, or IMDb → Your Ratings → Export) and drops the .csv in.
+   * We map their most-rated genres onto this person's stances and mark any
+   * titles we recognise as already seen. ---------------------------------- */
+  const IMPORT_GENRES = { 'sci-fi': 'Sci-Fi', 'science fiction': 'Sci-Fi', action: 'Action', adventure: 'Adventure', animation: 'Animation', comedy: 'Comedy', crime: 'Crime', documentary: 'Documentary', drama: 'Drama', fantasy: 'Fantasy', horror: 'Horror', romance: 'Romance', thriller: 'Thriller', mystery: 'Thriller', war: 'Drama', history: 'Drama', biography: 'Drama', music: 'Drama', musical: 'Comedy', family: 'Adventure', western: 'Adventure', sport: 'Drama' };
+  const normTitle = (t) => String(t || '').toLowerCase().replace(/^(the|a|an)\s+/, '').replace(/[^a-z0-9]+/g, '');
+  function parseCSV(text) {
+    const rows = []; let row = [], field = '', q = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (q) { if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else q = false; } else field += c; }
+      else if (c === '"') q = true;
+      else if (c === ',') { row.push(field); field = ''; }
+      else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; if (field !== '' || row.length) { row.push(field); rows.push(row); } row = []; field = ''; }
+      else field += c;
+    }
+    if (field !== '' || row.length) { row.push(field); rows.push(row); }
+    return rows;
+  }
+  function importRatings(pid, file) {
+    const p = findPerson(pid); if (!p || !file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const rows = parseCSV(String(reader.result || '').replace(/^﻿/, '').trim());
+      if (rows.length < 2) { toast('Could not read that CSV.'); return; }
+      const head = rows[0].map((h) => h.trim().toLowerCase());
+      const cTitle = head.indexOf('name') >= 0 ? head.indexOf('name') : head.indexOf('title');
+      const cGenres = head.indexOf('genres') >= 0 ? head.indexOf('genres') : head.indexOf('genre');
+      let cRating = head.indexOf('your rating'), ratingMax = 10;
+      if (cRating < 0) { cRating = head.indexOf('rating'); ratingMax = 5; }        // Letterboxd 0.5–5
+      if (cRating < 0) { cRating = head.indexOf('imdb rating'); ratingMax = 10; }
+      if (cTitle < 0) { toast('That CSV has no Name/Title column.'); return; }
+      const tally = {}; let matched = 0; const seenIds = [];
+      for (let r = 1; r < rows.length; r++) {
+        const row = rows[r]; const title = (row[cTitle] || '').trim(); if (!title) continue;
+        const rating = cRating >= 0 ? parseFloat(row[cRating]) : NaN;
+        const norm = isFinite(rating) ? rating / ratingMax : NaN;
+        let genres = cGenres >= 0 && row[cGenres] ? row[cGenres].split(/[;,]/).map((g) => g.trim()) : [];
+        const hit = window.CATALOG.find((c) => normTitle(c.title) === normTitle(title));
+        if (hit) { matched++; seenIds.push(hit.id); if (!genres.length) genres = hit.genres || []; }
+        const weight = isFinite(norm) ? (norm >= 0.7 ? 2 : norm >= 0.5 ? 1 : 0) : 1;   // unrated → light weight
+        if (weight > 0) for (const g of genres) { const app = IMPORT_GENRES[g.toLowerCase()] || (window.GENRES.includes(g) ? g : null); if (app) tally[app] = (tally[app] || 0) + weight; }
+      }
+      const ranked = Object.keys(tally).sort((a, b) => tally[b] - tally[a]);
+      if (!ranked.length) { toast('No genres recognised in that file.'); return; }
+      ranked.slice(0, 2).forEach((g) => { p.genres[g] = 'love'; });
+      ranked.slice(2, 5).forEach((g) => { if (p.genres[g] !== 'love') p.genres[g] = 'like'; });
+      let seen = 0;
+      seenIds.forEach((id) => { if (!new Set(state.memory.seen).has(id)) { state.memory = E.markSeen(state.memory, id, true); seen++; } });
+      if (seen) saveMemory();
+      persist(); renderCrew(); renderLedger(); if (poolOpen) renderPool();
+      toast(`Imported ${rows.length - 1} ratings → set ${p.name ? p.name + '’s' : 'their'} taste${matched ? `, ${seen} marked seen` : ''}.`);
+    };
+    reader.readAsText(file);
+  }
   crewEl.addEventListener('click', (e) => {
     if (e.target.closest('#room-invite')) { copyInvite(); return; }
     if (e.target.closest('#room-leave')) { leaveRoom(); return; }
@@ -277,6 +361,10 @@
       saveCrew(); renderCrew();
       crewEl.querySelectorAll('.name-input')[state.crew.length - 1]?.focus();
     }
+  });
+  crewEl.addEventListener('change', (e) => {
+    const fi = e.target.closest('input[type="file"][data-import]');
+    if (fi && fi.files && fi.files[0]) { importRatings(fi.dataset.import, fi.files[0]); fi.value = ''; }
   });
 
   crewEl.addEventListener('input', (e) => {
@@ -340,20 +428,22 @@
 
   function renderPool() {
     const lib = fullLibrary(), off = new Set(state.pool.disabled), seen = new Set(state.memory.seen);
+    const filterOn = !!(state.watch.services && state.watch.services.length);
     const active = lib.filter((c) => !off.has(c.id)).length;
     $('#pool-count').textContent = `— ${active} of ${lib.length} in play${state.pool.custom.length ? ` · ${state.pool.custom.length} you added` : ''}`;
     const q = poolSearch.trim().toLowerCase();
     const match = (c) => !q || c.title.toLowerCase().includes(q) || (c.genres || []).some((g) => g.toLowerCase().includes(q));
     const items = lib.filter(match).map((c) => {
       const isOff = off.has(c.id), isSeen = seen.has(c.id), custom = state.pool.custom.some((x) => x.id === c.id);
-      return `<div class="pool-item ${isOff ? 'off' : ''} ${isSeen ? 'seen' : ''} ${custom ? 'custom' : ''}" data-id="${c.id}" role="button" tabindex="0" aria-pressed="${!isOff}" title="${isOff ? 'Set aside — click to add back' : 'In tonight’s pool — click to set aside'}">
-        <span class="pi-swatch" style="background:${posterGradient(c, 150)}" aria-hidden="true"></span>
+      return `<div class="pool-item ${isOff ? 'off' : ''} ${isSeen ? 'seen' : ''} ${custom ? 'custom' : ''} ${filterOn && !watchable(c) ? 'unwatch' : ''}" data-id="${c.id}" role="button" tabindex="0" aria-pressed="${!isOff}" title="${isOff ? 'Set aside — click to add back' : 'In tonight’s pool — click to set aside'}">
+        <span class="pi-swatch" style="background:${posterBg(c, 150)}" aria-hidden="true"></span>
         <span class="pi-body"><span class="pi-title">${escapeHtml(c.title)}</span><span class="pi-meta">${c.kind} · ${runtimeStr(c)}</span></span>
         <button class="pi-seen" data-seen="${c.id}" aria-pressed="${isSeen}" title="Mark as already seen together">${isSeen ? 'Seen ✓' : 'Seen'}</button>
         ${custom ? `<button class="pi-del" data-del="${c.id}" aria-label="Delete ${escapeHtml(c.title)}">✕</button>` : ''}
       </div>`;
     }).join('');
     poolBody.innerHTML = `
+      ${watchControlHtml()}
       <div class="pool-toolbar">
         <input type="search" id="pool-search" class="pool-search" placeholder="Filter by title or genre…" value="${escapeHtml(poolSearch)}" aria-label="Filter options" />
         <button class="ghost-btn" id="pool-add-toggle" aria-expanded="${addFormOpen}">${addFormOpen ? 'Close' : '＋ Add your own title'}</button>
@@ -362,6 +452,25 @@
       ${addFormOpen ? addFormHtml() : ''}
       <div class="pool-grid">${items || '<p class="empty-note">No titles match that filter.</p>'}</div>`;
     if (document.activeElement && document.activeElement.id === 'pool-search') { const el = $('#pool-search'); el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+  }
+
+  function watchControlHtml() {
+    if (!hasProviderData()) return '';                          // no real availability data yet → no control
+    const regions = watchRegions();
+    if (!state.watch.region || !regions.includes(state.watch.region)) state.watch.region = regions.includes('US') ? 'US' : regions[0];
+    const region = state.watch.region;
+    const chosen = new Set(state.watch.services || []);
+    const regionOpts = regions.map((r) => `<option value="${r}" ${r === region ? 'selected' : ''}>${r}</option>`).join('');
+    const chips = watchServices(region).map((s) => `<button type="button" class="chip watch-svc" data-svc="${escapeHtml(s)}" data-stance="${chosen.has(s) ? 'love' : 'neutral'}" aria-pressed="${chosen.has(s)}">${escapeHtml(s)}</button>`).join('');
+    const avail = chosen.size ? fullLibrary().filter(watchable).length : null;
+    return `<div class="watch-control">
+      <div class="field-label" style="margin-bottom:10px">Where can we watch?<span style="color:var(--ink-3);text-transform:none;letter-spacing:0;margin-left:8px">${chosen.size ? (avail < 4 ? `only ${avail} of ${fullLibrary().length} on your services — too few to settle on, so we’ll use them all` : `${avail} of ${fullLibrary().length} on your services`) : 'pick your services to only show what you can stream'}</span></div>
+      <div class="af-row" style="align-items:center;gap:14px">
+        <label class="pool-hint" style="display:inline-flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0">Region <select id="watch-region" class="watch-region" aria-label="Region">${regionOpts}</select></label>
+        ${chosen.size ? '<button type="button" class="text-link" id="watch-clear">Clear</button>' : ''}
+      </div>
+      <div class="genres" style="margin-top:10px">${chips || '<span class="pool-hint">No streaming services listed for this region.</span>'}</div>
+    </div>`;
   }
 
   function addFormHtml() {
@@ -383,7 +492,12 @@
     if (e.target.id === 'pool-search') { poolSearch = e.target.value; renderPool(); }
     else if (e.target.dataset.draftMood) { draftMood[e.target.dataset.draftMood] = e.target.value / 100; }
   });
+  poolBody.addEventListener('change', (e) => {
+    if (e.target.id === 'watch-region') { state.watch.region = e.target.value; saveWatch(); renderPool(); }
+  });
   poolBody.addEventListener('click', (e) => {
+    const svc = e.target.closest('.watch-svc'); if (svc) { const n = svc.dataset.svc; const set = new Set(state.watch.services || []); set.has(n) ? set.delete(n) : set.add(n); state.watch.services = [...set]; saveWatch(); renderPool(); return; }
+    if (e.target.id === 'watch-clear') { state.watch.services = []; saveWatch(); renderPool(); return; }
     const del = e.target.closest('.pi-del'); if (del) { state.pool.custom = state.pool.custom.filter((c) => c.id !== del.dataset.del); savePool(); renderPool(); return; }
     const seen = e.target.closest('.pi-seen'); if (seen) { const id = seen.dataset.seen; state.memory = E.markSeen(state.memory, id, !new Set(state.memory.seen).has(id)); saveMemory(); renderPool(); return; }
     const item = e.target.closest('.pool-item'); if (item) { toggleInPool(item.dataset.id); return; }
@@ -468,7 +582,7 @@
     const callouts = [x.compromiseNote ? `<div class="callout">${escapeHtml(x.compromiseNote)}</div>` : '', x.fairnessNote ? `<div class="callout info">${escapeHtml(x.fairnessNote)}</div>` : '', x.relaxNote ? `<div class="callout info">${escapeHtml(x.relaxNote)}</div>` : ''].join('');
 
     let runnerHtml = `<p class="ruled-empty">Nothing close behind — this was the standout.</p>`;
-    if (x.runnerUp && r.runnerRow) { const rc = r.runnerRow.candidate; runnerHtml = `<div class="runner"><div class="r-poster" style="background:${posterGradient(rc, 165)}"></div><div><div class="r-title">${escapeHtml(rc.title)} <span style="color:var(--ink-3);font-weight:400">${escapeHtml(String(yearStr(rc)))}</span></div><div class="r-because">Lost because ${escapeHtml(x.runnerUp.because)}</div></div></div>`; }
+    if (x.runnerUp && r.runnerRow) { const rc = r.runnerRow.candidate; runnerHtml = `<div class="runner"><div class="r-poster" style="background:${posterBg(rc, 165)}"></div><div><div class="r-title">${escapeHtml(rc.title)} <span style="color:var(--ink-3);font-weight:400">${escapeHtml(String(yearStr(rc)))}</span></div><div class="r-because">Lost because ${escapeHtml(x.runnerUp.because)}</div></div></div>`; }
     const ruledHtml = x.ruledOut.length ? `<ul class="ruled-list">${x.ruledOut.map((s) => `<li>${escapeHtml(s)}</li>`).join('')}</ul>` : `<p class="ruled-empty">Nothing off the table — everything was fair game tonight.</p>`;
     const excludeNote = state.exclude.size ? `<span class="result-note">Skipped ${state.exclude.size} you passed on.</span>` : '';
     const isGuest = state.mode === 'room' && state.room && !state.room.host;
@@ -481,7 +595,7 @@
     stageEl.innerHTML = `
       <div class="verdict">
         <div class="verdict-grid">
-          <div class="poster" style="--poster-grad:${posterGradient(pick)}">
+          <div class="poster" style="--poster-grad:${posterBg(pick)}">
             <div class="kind-badge">${pick.kind} · ${escapeHtml(String(yearStr(pick)))}</div>
             <div class="monogram" aria-hidden="true">${monogram(pick.title)}</div>
             <div><div class="p-title">${escapeHtml(pick.title)}</div><div class="p-meta">${runtimeStr(pick)} · ${(pick.genres || []).join(' / ')}</div></div>
@@ -594,7 +708,7 @@
     const lh = [...res.explanation.perPerson].sort((a, b) => a.util - b.util)[0];
     const same = alt.id === currentPickId;
     out.innerHTML = `<div class="wi-card">
-      <div class="wi-poster" style="background:${posterGradient(alt, 160)}" aria-hidden="true"></div>
+      <div class="wi-poster" style="background:${posterBg(alt, 160)}" aria-hidden="true"></div>
       <div class="wi-text">
         <div class="wi-title">→ ${escapeHtml(alt.title)}${same ? ' <span class="wi-same">(no change — the pick holds)</span>' : ''}</div>
         <div class="wi-sub">${same ? 'That nudge alone isn’t enough to move it.' : `Now <b>${escapeHtml(lh.name)}</b> is the least-keen (${escapeHtml((lh.label || '').toLowerCase())}).`}</div>
@@ -761,7 +875,14 @@
     let sock = null, deliberate = false, retries = 0;
     function connect(then) {
       let url;
-      try { url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host; } catch (e) { return then(false); }
+      try {
+        // Deploy split-host: point the client at a remote live-rooms server via a
+        // <meta name="standoff-ws" content="wss://..."> tag or window.STANDOFF_WS.
+        // Defaults to same-origin, so local dev and single-host deploys are unchanged.
+        const meta = document.querySelector('meta[name="standoff-ws"]');
+        const configured = (window.STANDOFF_WS || (meta && meta.content) || '').trim();
+        url = configured || ((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
+      } catch (e) { return then(false); }
       try { sock = new WebSocket(url); } catch (e) { return then(false); }
       let settled = false;
       sock.addEventListener('open', () => { settled = true; then(true); });
@@ -929,6 +1050,7 @@
     store.del(LEGACY_CREW_KEY);
   }
   state.pool = store.get(POOL_KEY) || { disabled: [], custom: [] };
+  state.watch = store.get(WATCH_KEY) || { region: '', services: [] };
 
   if (hydrateFromHash()) {
     // A shared setup arrives as its own new crew, so it never clobbers a saved one.
