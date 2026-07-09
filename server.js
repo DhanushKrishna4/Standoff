@@ -39,6 +39,7 @@ const memFor = (code) => (db[code] = db[code] || { cumulative: {}, debt: {}, his
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.md': 'text/markdown; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json', '.py': 'text/plain; charset=utf-8' };
 const server = http.createServer((req, res) => {
   let u = decodeURIComponent((req.url || '/').split('?')[0]);
+  if (u === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); return res.end('ok'); } // deploy health check
   if (u === '/' || u.startsWith('/room/') || u.startsWith('/join')) u = '/index.html'; // pretty routes → app
   const fp = path.normalize(path.join(ROOT, u));
   if (!fp.startsWith(ROOT)) { res.writeHead(403); return res.end('forbidden'); }
