@@ -6,7 +6,7 @@
   <title>Standoff — settle what to watch</title>
   <meta name="description" content="Two to four people, four different tastes, one screen. Standoff merges everyone's mood, breaks the tie fairly, and shows exactly why." />
   <meta name="color-scheme" content="dark" />
-  <meta name="theme-color" content="#f3b23e" />
+  <meta name="theme-color" content="#0a0806" />
   <meta property="og:type" content="website" />
   <meta property="og:title" content="Standoff — settle what to watch" />
   <meta property="og:description" content="Merges everyone's mood, breaks the tie fairly, and shows exactly why — and keeps it fair across nights." />
@@ -14,45 +14,68 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..800&family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..800&family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>" />
 </head>
 <body>
+  <!-- ============================ PRELOADER =========================== -->
+  <div class="preloader" id="preloader">
+    <div class="pl-inner">
+      <span class="pl-kicker">Now showing</span>
+      <div class="pl-board" id="pl-board" aria-label="Standoff"></div>
+      <div class="pl-meter"><span class="pl-fill" id="pl-fill"></span></div>
+      <div class="pl-foot"><span class="pl-tag">Dimming the lights</span><span class="pl-count" id="pl-count">00</span></div>
+    </div>
+  </div>
+
   <div class="noise" aria-hidden="true"></div>
+  <div class="vignette" aria-hidden="true"></div>
   <div class="glow" id="glow" aria-hidden="true"></div>
   <div class="progress" id="progress" aria-hidden="true"></div>
+  <div class="cursor" id="cursor" aria-hidden="true"><span class="cursor-ring"></span><span class="cursor-dot"></span></div>
 
   <!-- ============================== HERO ============================== -->
   <header class="hero" id="hero">
+    <div class="hero-beam" aria-hidden="true"></div>
+
     <nav class="topbar">
-      <a class="brand" href="#top"><span class="brand-dot" aria-hidden="true"></span>Standoff</a>
-      <button class="ghost-btn" id="how-btn">How it works</button>
+      <a class="brand" href="#top" data-cursor="top"><span class="brand-reel" aria-hidden="true"></span>Standoff</a>
+      <div class="topbar-right">
+        <span class="topbar-tag" aria-hidden="true">Feature presentation</span>
+        <button class="ghost-btn" id="how-btn">How it works</button>
+      </div>
     </nav>
 
     <div class="hero-body">
-      <p class="kicker" data-reveal>The&nbsp;“what do we watch”&nbsp;deadlock breaker</p>
-      <h1 class="hero-title" id="hero-title">
-        <span class="line"><span>End the</span></span>
-        <span class="line"><span>movie-night</span></span>
-        <span class="line"><span class="ital">standoff.</span></span>
-      </h1>
+      <p class="kicker" data-reveal><span class="kicker-rule" aria-hidden="true"></span>The&nbsp;“what do we watch”&nbsp;deadlock breaker</p>
+      <h1 class="board" id="hero-title" aria-label="End the movie-night standoff."></h1>
       <p class="hero-sub" data-reveal>Two to four people, four different tastes, one screen. It merges everyone's
         mood, breaks the tie fairly, and shows exactly why — and keeps it fair across nights.</p>
-      <a class="hero-cta" href="#room" data-reveal><span>Assemble the room</span><span class="arr" aria-hidden="true">↓</span></a>
+      <div class="hero-actions" data-reveal>
+        <a class="hero-cta ticket" href="#room" data-magnetic data-cursor="enter">
+          <span class="tk-stub" aria-hidden="true"></span>
+          <span class="hc-label">Assemble the room</span>
+          <span class="hc-arr" aria-hidden="true">→</span>
+        </a>
+        <button class="hero-ghost" id="hero-example-btn" data-cursor="load">Or load an example crew</button>
+      </div>
     </div>
 
-    <div class="ticker" aria-hidden="true">
-      <div class="ticker-track">
-        <span>No more endless scrolling</span><span class="star">✦</span>
-        <span>Everyone gets a fair shake</span><span class="star">✦</span>
-        <span>It shows its work</span><span class="star">✦</span>
-        <span>Nobody quietly loses every time</span><span class="star">✦</span>
-        <span>No more endless scrolling</span><span class="star">✦</span>
-        <span>Everyone gets a fair shake</span><span class="star">✦</span>
-        <span>It shows its work</span><span class="star">✦</span>
-        <span>Nobody quietly loses every time</span><span class="star">✦</span>
+    <div class="hero-foot">
+      <div class="marquee" aria-hidden="true">
+        <div class="marquee-track">
+          <span>No more endless scrolling</span><b>●</b>
+          <span>Everyone gets a fair shake</span><b>●</b>
+          <span>It shows its work</span><b>●</b>
+          <span>Nobody quietly loses every time</span><b>●</b>
+          <span>No more endless scrolling</span><b>●</b>
+          <span>Everyone gets a fair shake</span><b>●</b>
+          <span>It shows its work</span><b>●</b>
+          <span>Nobody quietly loses every time</span><b>●</b>
+        </div>
       </div>
+      <div class="scroll-cue" aria-hidden="true"><span>Scroll</span><i></i></div>
     </div>
   </header>
 
@@ -60,8 +83,8 @@
     <!-- ============================ THE ROOM =========================== -->
     <section class="sect" id="room">
       <div class="sect-head" data-reveal>
-        <span class="num">01</span>
-        <h2 class="sect-title">The room</h2>
+        <span class="num">Reel 01</span>
+        <h2 class="sect-title"><span class="st-mask"><span>The room</span></span></h2>
         <div class="sect-aside">
           <p class="sect-hint">Add who's watching. Tap a genre to cycle <b>like → love → dislike → veto</b>, then set tonight's mood.</p>
           <div class="sect-links">
@@ -77,18 +100,30 @@
     <!-- ========================== THE SHORTLIST ======================== -->
     <section class="sect tight" id="pool-sect">
       <button class="disclose" id="pool-head" aria-expanded="false" aria-controls="pool-body">
-        <span class="num">02</span>
-        <span class="sect-title">The shortlist</span>
+        <span class="num">Reel 02</span>
+        <span class="sect-title"><span class="st-mask"><span>The shortlist</span></span></span>
         <span class="disclose-meta" id="pool-count">— the full library</span>
         <span class="chev" aria-hidden="true">↓</span>
       </button>
       <div class="pool-body" id="pool-body" hidden></div>
     </section>
 
+    <!-- ============================ INTERLUDE ========================== -->
+    <section class="interlude" id="interlude" aria-label="Why it's fair">
+      <div class="marquee-card" data-reveal>
+        <span class="mc-bulbs" aria-hidden="true"></span>
+        <span class="mc-label">The idea</span>
+        <p class="mc-line">Averaging picks the film everyone finds <em>“fine.”</em></p>
+        <p class="mc-line mc-strong">Standoff finds the one <em>nobody regrets.</em></p>
+        <span class="mc-bulbs mc-bulbs-b" aria-hidden="true"></span>
+      </div>
+    </section>
+
     <!-- ============================= SETTLE ============================ -->
     <div class="settle" data-reveal>
-      <button class="settle-btn" id="resolve-btn">
+      <button class="settle-btn" id="resolve-btn" data-magnetic data-cursor="roll it">
         <span class="sb-fill" aria-hidden="true"></span>
+        <span class="sb-ring" aria-hidden="true"></span>
         <span class="sb-label">Settle it</span>
       </button>
       <div class="settle-side">
@@ -108,8 +143,8 @@
     <!-- ============================= LEDGER ============================ -->
     <section class="sect tight" id="ledger">
       <button class="disclose" id="ledger-head" aria-expanded="false" aria-controls="ledger-body">
-        <span class="num">03</span>
-        <span class="sect-title">Fairness ledger</span>
+        <span class="num">Reel 03</span>
+        <span class="sect-title"><span class="st-mask"><span>Fairness ledger</span></span></span>
         <span class="disclose-meta" id="ledger-crew">— this crew</span>
         <span class="chev" aria-hidden="true">↓</span>
       </button>
@@ -131,14 +166,22 @@
     </section>
   </main>
 
-  <footer>
-    <p>A single, dependency-free page — the decision engine is a pure function.
-      See <a href="README.md">README.md</a> for the social-choice reasoning; run
-      <code>node engine.test.js</code> for the 19 tests.</p>
+  <footer class="footer">
+    <div class="slate" data-reveal>
+      <div class="slate-clap" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="slate-rows">
+        <div class="slate-row"><span>Production</span><b>Standoff</b></div>
+        <div class="slate-row"><span>Scene</span><b>Settle what to watch</b></div>
+        <div class="slate-row"><span>Build</span><b>One page · zero dependencies · a pure-function engine</b></div>
+      </div>
+      <p class="footer-note">See <a href="README.md">README.md</a> for the social-choice reasoning; run
+        <code>node engine.test.js</code> for the 19 tests.</p>
+    </div>
   </footer>
 
   <!-- split-flap reveal -->
   <div class="reveal" id="reveal" aria-hidden="true">
+    <div class="reveal-glow" aria-hidden="true"></div>
     <div class="reveal-inner">
       <div class="reveal-label" id="reveal-label">Tallying the room…</div>
       <div class="flap-board" id="flap-board"></div>
@@ -212,5 +255,6 @@
   <script src="catalog.js"></script>
   <script src="engine.js"></script>
   <script src="app.js"></script>
+  <script src="visual.js"></script>
 </body>
 </html>
