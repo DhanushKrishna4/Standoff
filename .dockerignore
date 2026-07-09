@@ -1,0 +1,11 @@
+.git
+.github
+.claude
+node_modules
+.standoff-rooms.json
+*.log
+.DS_Store
+scripts
+*.test.js
+catalog.generated.js
+README.md

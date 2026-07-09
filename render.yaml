@@ -1,0 +1,16 @@
+# Render blueprint — one-click deploy of the whole app (static + live rooms).
+# Zero dependencies, so no build step; Render just runs the Node server, which
+# serves index.html and the RFC 6455 WebSocket rooms from the same origin.
+# Deploy: push to GitHub, then New → Blueprint on render.com and pick this repo.
+# (For Fly.io / Railway / Cloud Run, use the included Dockerfile instead.)
+services:
+  - type: web
+    name: standoff
+    runtime: node
+    plan: free
+    buildCommand: ""
+    startCommand: node server.js
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
