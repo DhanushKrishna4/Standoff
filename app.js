@@ -84,11 +84,13 @@
   }
   const saveMemory = () => store.set(memKey(state.crewId), state.memory);
   const savePool = () => store.set(POOL_KEY, state.pool);
+  // Persist saved crews — but never the throwaway "example" demo crew.
+  const persistCrews = () => store.set(CREWS_KEY, state.crews.filter((c) => !c.ephemeral));
   function saveCrew() {
     const c = state.crews.find((x) => x.id === state.crewId);
     if (c) c.crew = state.crew;
-    store.set(CREWS_KEY, state.crews);
-    store.set(ACTIVE_KEY, state.crewId);
+    persistCrews();
+    if (c && !c.ephemeral) store.set(ACTIVE_KEY, state.crewId);
   }
 
   /* ---- first-class crews: save, name, switch ---------------------------- */
@@ -112,7 +114,7 @@
     saveCrew();
     const c = { id: uid(), name: '', crew: seed || seedCrew() };
     state.crews.push(c); state.crewId = c.id; state.crew = c.crew;
-    store.set(CREWS_KEY, state.crews); store.set(ACTIVE_KEY, c.id);
+    persistCrews(); store.set(ACTIVE_KEY, c.id);
     loadMemory(); clearVerdict();
     renderCrewTabs(); renderCrew(); renderLedger();
     crewEl.querySelector('.name-input')?.focus();
@@ -122,14 +124,14 @@
     if (state.crews.length <= 1) return;
     store.del(memKey(id));
     state.crews = state.crews.filter((x) => x.id !== id);
-    store.set(CREWS_KEY, state.crews);
+    persistCrews();
     if (state.crewId === id) { const nx = state.crews[0]; state.crewId = nx.id; state.crew = nx.crew; store.set(ACTIVE_KEY, nx.id); loadMemory(); clearVerdict(); if (poolOpen) renderPool(); }
     renderCrewTabs(); renderCrew(); renderLedger();
   }
   function renameActiveCrew() {
     const c = state.crews.find((x) => x.id === state.crewId); if (!c) return;
     const name = window.prompt('Name this crew (e.g. Movie Club, Family):', c.name || crewLabel(c));
-    if (name != null) { c.name = name.trim(); store.set(CREWS_KEY, state.crews); renderCrewTabs(); renderLedger(); }
+    if (name != null) { c.name = name.trim(); persistCrews(); renderCrewTabs(); renderLedger(); }
   }
   function renderCrewTabs() {
     const el = $('#crew-tabs'); if (!el) return;
@@ -310,10 +312,14 @@
   });
 
   $('#example-btn').addEventListener('click', () => {
-    const existing = state.crews.find((c) => c.name === 'Example');
-    if (existing) switchCrew(existing.id);
-    else { const c = newCrew(exampleCrew()); c.name = 'Example'; store.set(CREWS_KEY, state.crews); renderCrewTabs(); }
-    toast('Loaded an example crew — settle away.');
+    saveCrew();                                             // keep whatever the user was building
+    state.crews = state.crews.filter((c) => !c.ephemeral);  // only ever one live demo
+    const c = { id: uid(), name: 'Example', crew: exampleCrew(), ephemeral: true };
+    state.crews.push(c); state.crewId = c.id; state.crew = c.crew;   // active for this session only — never saved
+    loadMemory(); clearVerdict();
+    renderCrewTabs(); renderCrew(); renderLedger(); if (poolOpen) renderPool();
+    resolveBtn.disabled = state.crew.length < MIN_PEOPLE;
+    toast('Loaded an example crew to try — it won’t be saved.');
   });
 
   /* =========================================================================
@@ -906,6 +912,17 @@
    * ====================================================================== */
   // Load saved crews (migrating a legacy single crew if present), else seed one.
   state.crews = store.get(CREWS_KEY);
+  // Migration: older builds saved the "example crew" demo, so Maya/Leo/Priya
+  // greeted returning visitors. Drop it — the example is a throwaway now.
+  if (Array.isArray(state.crews)) {
+    const demo = new Set(['maya', 'leo', 'priya']);
+    state.crews = state.crews.filter((c) => !c.ephemeral && !(
+      (c.name || '').trim().toLowerCase() === 'example' &&
+      Array.isArray(c.crew) && c.crew.length === 3 &&
+      c.crew.every((p) => demo.has((p.name || '').trim().toLowerCase()))
+    ));
+    if (!state.crews.length) state.crews = null;   // fall through to seeding a fresh blank crew
+  }
   if (!Array.isArray(state.crews) || !state.crews.length) {
     const legacy = store.get(LEGACY_CREW_KEY);
     state.crews = [{ id: uid(), name: '', crew: (Array.isArray(legacy) && legacy.length) ? legacy : seedCrew() }];
@@ -917,13 +934,13 @@
     // A shared setup arrives as its own new crew, so it never clobbers a saved one.
     const shared = { id: uid(), name: 'Shared crew', crew: state.crew };
     state.crews.push(shared); state.crewId = shared.id; state.crew = shared.crew;
-    store.set(CREWS_KEY, state.crews); store.set(ACTIVE_KEY, shared.id); savePool();
+    persistCrews(); store.set(ACTIVE_KEY, shared.id); savePool();
     setTimeout(() => toast('Loaded a shared setup — saved as a new crew.'), 500);
   } else {
     state.crewId = store.get(ACTIVE_KEY);
     if (!state.crews.find((x) => x.id === state.crewId)) state.crewId = state.crews[0].id;
     state.crew = state.crews.find((x) => x.id === state.crewId).crew;
-    store.set(CREWS_KEY, state.crews); store.set(ACTIVE_KEY, state.crewId);
+    persistCrews(); store.set(ACTIVE_KEY, state.crewId);
   }
   loadMemory();
   renderCrewTabs();
