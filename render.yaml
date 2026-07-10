@@ -14,3 +14,12 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+    # Free tier has an ephemeral disk, so room ledgers + accounts reset on each
+    # redeploy. To persist them, switch `plan` to `starter` and uncomment below —
+    # the server writes to $DATA_DIR when set (see server.js).
+    #   - key: DATA_DIR
+    #     value: /data
+    # disk:
+    #   name: standoff-data
+    #   mountPath: /data
+    #   sizeGB: 1

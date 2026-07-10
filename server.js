@@ -24,8 +24,12 @@ const { CATALOG } = require('./catalog.js');
 
 const PORT = process.env.PORT || 4173;
 const ROOT = __dirname;
+// Where room ledgers + accounts persist. Defaults to the app dir (local dev);
+// point DATA_DIR at a mounted disk on a host so data survives redeploys.
+const DATA_DIR = process.env.DATA_DIR || ROOT;
+try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (e) {}
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
-const DATA_FILE = path.join(ROOT, '.standoff-rooms.json');
+const DATA_FILE = path.join(DATA_DIR, '.standoff-rooms.json');
 const MAX_ROOM = 8;
 
 // ---- per-room fairness memory, persisted to disk -----------------------------
@@ -41,7 +45,7 @@ const memFor = (code) => (db[code] = db[code] || { cumulative: {}, debt: {}, his
 // third-party DB — so the app stays a single dependency-free page. An account
 // stores one blob (crews, ledgers, seen-lists, custom titles); accounts are
 // opt-in and the app keeps working with no account at all.
-const ACC_FILE = path.join(ROOT, '.standoff-accounts.json');
+const ACC_FILE = path.join(DATA_DIR, '.standoff-accounts.json');
 let accounts = {};
 try { accounts = JSON.parse(fs.readFileSync(ACC_FILE, 'utf8')) || {}; } catch (e) {}
 let accTimer = null;
