@@ -101,6 +101,11 @@ const server = http.createServer((req, res) => {
   if (u === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); return res.end('ok'); } // deploy health check
   if (u.startsWith('/api/')) return handleApi(req, res, u); // accounts + cloud persistence
   if (u === '/' || u.startsWith('/room/') || u.startsWith('/join')) u = '/index.html'; // pretty routes → app
+  // Serve client assets only — never dotfiles (accounts + room ledgers live in
+  // .standoff-*.json), the server source, tests, or tooling.
+  if (u.split('/').some((s) => s.startsWith('.')) || u.startsWith('/scripts/') || /(^|\/)(server\.js|[^/]*\.test\.js)$/.test(u)) {
+    res.writeHead(404); return res.end('not found');
+  }
   const fp = path.normalize(path.join(ROOT, u));
   if (!fp.startsWith(ROOT)) { res.writeHead(403); return res.end('forbidden'); }
   fs.readFile(fp, (e, d) => {
