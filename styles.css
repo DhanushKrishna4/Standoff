@@ -645,3 +645,64 @@ table.h2h th.h2h-name { text-align: left; color: var(--ink-2); font-weight: 450;
 
 .pool-grid::-webkit-scrollbar, .modal::-webkit-scrollbar { width: 10px; }
 .pool-grid::-webkit-scrollbar-thumb, .modal::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
+
+/* ==========================================================================
+ * Batch 2 — deepened engine UI: conviction, finer tone, group constraints,
+ * the method family + Kemeny order, post-watch feedback.
+ * ====================================================================== */
+
+/* Finer-tone expander (extra learned mood axes — items 10 & 14) */
+.mood-more { margin-top: 6px; }
+.mood-more > summary { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.5px; text-transform: uppercase; color: var(--ink-3); cursor: pointer; list-style: none; padding: 3px 0; user-select: none; transition: color 0.16s var(--ease); }
+.mood-more > summary::-webkit-details-marker { display: none; }
+.mood-more > summary::before { content: '＋ '; color: var(--gold); }
+.mood-more[open] > summary::before { content: '－ '; }
+.mood-more > summary:hover { color: var(--ink-2); }
+.mood-more .moods { margin-top: 8px; }
+
+/* Conviction control (item 9) */
+.conviction-row { display: inline-flex; gap: 0; border: 1px solid var(--line-2); border-radius: 999px; padding: 2px; background: var(--panel); }
+.conv-btn { font-family: var(--font-ui); font-size: 12px; font-weight: 500; color: var(--ink-3); background: transparent; border: none; border-radius: 999px; padding: 5px 13px; cursor: pointer; white-space: nowrap; transition: all 0.16s var(--ease); }
+.conv-btn:hover { color: var(--ink-2); }
+.conv-btn.active { color: #0d0b08; background: linear-gradient(135deg, var(--gold), var(--gold-2)); font-weight: 600; box-shadow: 0 3px 10px -5px rgba(243,178,62,0.6); }
+
+/* Group-composition constraints (item 11) */
+.group-controls { margin-top: 20px; display: flex; flex-direction: column; gap: 10px; }
+.gc-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.gc-label { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 1px; text-transform: uppercase; color: var(--ink-3); min-width: 62px; }
+.gc-chips { display: flex; gap: 7px; flex-wrap: wrap; }
+.gc-chip { font-family: var(--font-ui); font-size: 12.5px; font-weight: 500; color: var(--ink-2); border: 1px solid var(--line-2); background: transparent; border-radius: 999px; padding: 5px 12px; cursor: pointer; transition: all 0.16s var(--ease); }
+.gc-chip:hover { border-color: var(--gold); color: var(--ink); }
+.gc-chip.active { color: #0d0b08; background: linear-gradient(135deg, var(--gold), var(--gold-2)); border-color: transparent; font-weight: 600; }
+.gc-chip.gc-warn.active { background: linear-gradient(135deg, #d9645a, #e88b7f); color: #1a0f0d; }
+.gc-empty { color: var(--ink-3); font-size: 12px; }
+
+/* Method family — grouped by philosophy + Kemeny consensus order (items 7 & 8) */
+.method-fam { margin-top: 14px; }
+.method-fam:first-of-type { margin-top: 4px; }
+.mf-label { font-family: var(--font-mono); font-size: 10px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--gold); opacity: 0.75; margin-bottom: 8px; }
+.kemeny { margin-top: 16px; padding-top: 15px; border-top: 1px solid var(--line); }
+.kemeny-head { font-size: 13px; color: var(--ink-2); font-weight: 600; margin-bottom: 9px; }
+.kemeny-head .k-sub { display: block; font-weight: 400; font-size: 12px; color: var(--ink-3); margin-top: 3px; }
+.kemeny-list { list-style: none; counter-reset: kem; display: flex; flex-direction: column; gap: 4px; padding: 0; margin: 0; }
+.kemeny-list li { counter-increment: kem; position: relative; padding: 4px 4px 4px 30px; font-size: 13.5px; color: var(--ink-2); }
+.kemeny-list li::before { content: counter(kem); position: absolute; left: 0; top: 3px; width: 20px; height: 20px; display: grid; place-items: center; font-family: var(--font-mono); font-size: 11px; color: var(--gold-2); border: 1px solid var(--line-2); border-radius: 50%; }
+.kemeny-list li:first-child { color: var(--ink); font-weight: 600; }
+.kemeny-list li:first-child::before { border-color: var(--gold); background: var(--gold-soft); color: var(--gold); }
+
+/* Room what-if pending state (item 15) */
+.wi-pending { color: var(--ink-3); font-style: italic; }
+
+/* Post-watch feedback loop (item 12) */
+.postwatch { margin-top: 20px; padding: 16px 16px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+.pw-head { font-size: 13.5px; color: var(--ink-2); line-height: 1.5; margin-bottom: 13px; }
+.pw-rows { display: flex; flex-direction: column; gap: 9px; margin-bottom: 14px; }
+.pw-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.pw-who { font-size: 14px; color: var(--ink); font-weight: 500; }
+.pw-faces { display: inline-flex; gap: 6px; }
+.pw-face { font-size: 19px; line-height: 1; background: transparent; border: 1px solid var(--line-2); border-radius: 10px; padding: 5px 9px; cursor: pointer; filter: grayscale(0.7) opacity(0.6); transition: all 0.16s var(--ease); }
+.pw-face:hover { filter: grayscale(0) opacity(1); border-color: var(--gold); }
+.pw-face.active { filter: grayscale(0) opacity(1); border-color: var(--gold); background: var(--gold-soft); transform: scale(1.08); }
+.pw-save { font-family: var(--font-ui); font-size: 13px; font-weight: 600; color: #0d0b08; background: linear-gradient(135deg, var(--gold), var(--gold-2)); border: none; border-radius: 10px; padding: 9px 16px; cursor: pointer; transition: opacity 0.16s var(--ease); }
+.pw-save:disabled { opacity: 0.4; cursor: default; }
+.pw-done { font-size: 13.5px; color: var(--green); font-weight: 500; }

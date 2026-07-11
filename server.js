@@ -120,7 +120,7 @@ const rooms = new Map(); // code -> { code, hostId, clients: Map(id -> client), 
 const roomCode = () => { const A = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; let s = ''; for (let i = 0; i < 4; i++) s += A[(Math.random() * A.length) | 0]; return s; };
 const uid = () => Math.random().toString(36).slice(2, 9);
 
-const DEFAULT_PERSON = () => ({ name: '', genres: {}, mood: { brain: 0.5, intensity: 0.5, levity: 0.5 }, runtimeCap: 999 });
+const DEFAULT_PERSON = () => ({ name: '', genres: {}, mood: { brain: 0.5, intensity: 0.5, levity: 0.5 }, runtimeCap: 999, conviction: 'normal' });
 const hasTaste = (p) => p && (Object.keys(p.genres || {}).length > 0 || (p.name || '').trim());
 
 function roomPublic(room) {
@@ -138,7 +138,7 @@ function engineCrew(room) {
     let n = (c.name || '').trim() || `Guest ${i + 1}`;
     let k = n.toLowerCase(); if (seen[k]) { n = `${n} ${i + 1}`; k = n.toLowerCase(); } seen[k] = true;
     const p = c.person || DEFAULT_PERSON();
-    return { name: n, genres: p.genres || {}, mood: p.mood || DEFAULT_PERSON().mood, runtimeCap: p.runtimeCap == null ? 999 : p.runtimeCap };
+    return { name: n, genres: p.genres || {}, mood: p.mood || DEFAULT_PERSON().mood, runtimeCap: p.runtimeCap == null ? 999 : p.runtimeCap, conviction: p.conviction || 'normal' };
   });
 }
 function activeCatalog(room) {
@@ -218,6 +218,25 @@ function handle(client, msg) {
       db[room.code] = engine.commit(memFor(room.code), room.result.pick, room.result._committable.normForPick);
       saveDb();
       broadcast(room, { t: 'locked' });
+      break;
+    }
+    // Interactive counterfactual in a live room (item 15). Only the server holds
+    // everyone's private tastes, so it computes "what would flip it" and returns the
+    // alternate outcome to just the asker — nobody else's preferences are revealed.
+    case 'whatif': {
+      const room = rooms.get(client.roomCode);
+      if (!room || !room.result || room.result.empty) return;
+      const { who, genre, to } = msg;
+      const crew = engineCrew(room).map((p) => ({ ...p, genres: { ...p.genres } }));
+      const person = crew.find((p) => p.name === who);
+      if (!person) return;
+      if (!to || to === 'neutral') delete person.genres[genre]; else person.genres[genre] = to;
+      let res;
+      try { res = engine.resolve(crew, activeCatalog(room), { exclude: [...room.exclude] }, memFor(room.code)); }
+      catch (e) { return; }
+      if (res.empty) { send(client.sock, { t: 'whatif', who, genre, to, empty: true }); break; }
+      const lh = [...res.explanation.perPerson].sort((a, b) => a.util - b.util)[0];
+      send(client.sock, { t: 'whatif', who, genre, to, title: res.pick.title, same: res.pick.id === room.result.pick.id, leastHappy: lh ? { name: lh.name, label: lh.label } : null });
       break;
     }
     case 'ping': send(client.sock, { t: 'pong' }); break;

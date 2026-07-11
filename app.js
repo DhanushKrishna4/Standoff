@@ -32,9 +32,11 @@
   const MUTE_KEY = 'standoff:muted';
   const memKey = (id) => 'standoff:mem:v4:' + id; // ledger keyed by stable crew id
   const uid = () => 'p' + Math.random().toString(36).slice(2, 8);
+  const PRIMARY_AXES = new Set(['brain', 'intensity', 'levity', 'novelty']); // shown by default; the rest fold into "finer tone"
+  const CONV_LABEL = { easy: "I'm easy", normal: 'Normal', care: 'I care a lot' };
 
   /* ---- a clean start: blank seats, no pre-baked opinions ---------------- */
-  const blankPerson = () => ({ id: uid(), name: '', genres: {}, mood: { brain: 0.5, intensity: 0.5, levity: 0.5 }, runtimeCap: NO_LIMIT });
+  const blankPerson = () => ({ id: uid(), name: '', genres: {}, mood: { brain: 0.5, intensity: 0.5, levity: 0.5 }, runtimeCap: NO_LIMIT, conviction: 'normal' });
   const seedCrew = () => [blankPerson(), blankPerson()];
   const exampleCrew = () => [
     { id: uid(), name: 'Maya', genres: { Animation: 'love', Adventure: 'like', Comedy: 'like', Horror: 'veto' }, mood: { brain: 0.5, intensity: 0.5, levity: 0.65 }, runtimeCap: 150 },
@@ -43,7 +45,7 @@
   ];
 
   /* ---- state ------------------------------------------------------------ */
-  const state = { crews: [], crewId: null, crew: null, pool: { disabled: [], custom: [] }, memory: { cumulative: {}, debt: {}, history: [], seen: [], nights: 0 }, result: null, exclude: new Set(), locked: false, mode: 'solo', room: null, me: null };
+  const state = { crews: [], crewId: null, crew: null, pool: { disabled: [], custom: [] }, memory: { cumulative: {}, debt: {}, history: [], seen: [], nights: 0 }, result: null, exclude: new Set(), locked: false, mode: 'solo', room: null, me: null, group: { rating: null, schoolNight: false, warnings: [] } };
 
   /* ---- unique, non-empty names (engine keys on names) ------------------- */
   function crewNames() {
@@ -58,7 +60,17 @@
   }
   function engineCrew() {
     const names = crewNames();
-    return state.crew.map((p, i) => ({ name: names[i], genres: p.genres, mood: p.mood, runtimeCap: p.runtimeCap >= NO_LIMIT ? 999 : p.runtimeCap }));
+    return state.crew.map((p, i) => ({ name: names[i], genres: p.genres, mood: p.mood, runtimeCap: p.runtimeCap >= NO_LIMIT ? 999 : p.runtimeCap, conviction: p.conviction || 'normal' }));
+  }
+  // Group-composition constraints (item 11) → engine options.constraints.
+  const RATING_CAPS = { kids: { maxRatingLevel: 1, label: 'PG' }, family: { maxRatingLevel: 2, label: 'PG-13' } };
+  function engineConstraints() {
+    const g = state.group || {};
+    const cx = {};
+    if (g.rating && RATING_CAPS[g.rating]) { cx.maxRatingLevel = RATING_CAPS[g.rating].maxRatingLevel; cx.maxRatingLabel = RATING_CAPS[g.rating].label; cx.ratingLabel = g.rating === 'kids' ? 'kids are here' : 'keep it PG-13'; }
+    if (g.schoolNight) { cx.groupRuntimeCap = 120; cx.groupRuntimeLabel = 'school night'; }
+    if (g.warnings && g.warnings.length) cx.blockedWarnings = g.warnings.slice();
+    return Object.keys(cx).length ? cx : null;
   }
 
   /* ---- shareable setup links -------------------------------------------- */
@@ -66,14 +78,14 @@
     enc(o) { return btoa(unescape(encodeURIComponent(JSON.stringify(o)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); },
     dec(s) { try { return JSON.parse(decodeURIComponent(escape(atob(s.replace(/-/g, '+').replace(/_/g, '/'))))); } catch (e) { return null; } },
   };
-  const sharePayload = () => ({ c: state.crew.map((p) => ({ n: p.name, g: p.genres, m: p.mood, r: p.runtimeCap })), d: state.pool.disabled, u: state.pool.custom });
+  const sharePayload = () => ({ c: state.crew.map((p) => ({ n: p.name, g: p.genres, m: p.mood, r: p.runtimeCap, v: p.conviction })), d: state.pool.disabled, u: state.pool.custom });
   const shareLink = () => location.origin + location.pathname + '#s=' + b64.enc(sharePayload());
   function hydrateFromHash() {
     const m = /[#&]s=([^&]+)/.exec(location.hash);
     if (!m) return false;
     const data = b64.dec(m[1]);
     if (!data || !Array.isArray(data.c)) return false;
-    state.crew = data.c.map((p) => ({ id: uid(), name: p.n, genres: p.g || {}, mood: p.m || { brain: 0.5, intensity: 0.5, levity: 0.5 }, runtimeCap: p.r || NO_LIMIT }));
+    state.crew = data.c.map((p) => ({ id: uid(), name: p.n, genres: p.g || {}, mood: p.m || { brain: 0.5, intensity: 0.5, levity: 0.5 }, runtimeCap: p.r || NO_LIMIT, conviction: p.v || 'normal' }));
     state.pool = { disabled: data.d || [], custom: data.u || [] };
     try { history.replaceState(null, '', location.pathname); } catch (e) {}
     return true;
@@ -260,10 +272,14 @@
       const stance = p.genres[g] || 'neutral';
       return `<button class="chip" data-pid="${p.id}" data-genre="${g}" data-stance="${stance}" aria-label="${g}: ${STANCE_WORD[stance]}. Tap to change.">${g}</button>`;
     }).join('');
-    const moods = window.MOOD_AXES.map((ax) => {
+    const moodSlider = (ax) => {
       const v = Math.round((p.mood[ax.key] ?? 0.5) * 100);
       return `<div class="mood"><input type="range" min="0" max="100" step="1" value="${v}" data-pid="${p.id}" data-axis="${ax.key}" aria-label="${escapeHtml(p.name || 'Person ' + (i + 1))}'s mood: ${ax.low} to ${ax.high}" /><div class="mood-ends"><span class="lo ${v < 50 ? 'active' : ''}">${ax.low}</span><span class="hi ${v >= 50 ? 'active' : ''}">${ax.high}</span></div></div>`;
-    }).join('');
+    };
+    const primaryMoods = window.MOOD_AXES.filter((a) => PRIMARY_AXES.has(a.key)).map(moodSlider).join('');
+    const extraMoods = window.MOOD_AXES.filter((a) => !PRIMARY_AXES.has(a.key)).map(moodSlider).join('');
+    const conv = p.conviction || 'normal';
+    const convBtns = ['easy', 'normal', 'care'].map((c) => `<button type="button" class="conv-btn ${conv === c ? 'active' : ''}" data-pid="${p.id}" data-conviction="${c}" aria-pressed="${conv === c}">${CONV_LABEL[c]}</button>`).join('');
     const capVal = p.runtimeCap >= NO_LIMIT ? NO_LIMIT : p.runtimeCap;
     const capLabel = p.runtimeCap >= NO_LIMIT ? 'No limit' : `≤ ${p.runtimeCap} min`;
     return `
@@ -274,10 +290,16 @@
           ${canRemove ? `<button class="remove-person" data-pid="${p.id}" title="Remove" aria-label="Remove ${escapeHtml(p.name || 'person')}">×</button>` : ''}
         </div>
         <div><div class="field-label">Genres <label class="import-link" title="Import a Letterboxd or IMDb ratings CSV to set genres automatically">↥ Import ratings<input type="file" accept=".csv,text/csv" data-import="${p.id}" hidden /></label></div><div class="genres">${chips}</div></div>
-        <div><div class="field-label">Tonight's mood</div><div class="moods">${moods}</div></div>
+        <div><div class="field-label">Tonight's mood</div><div class="moods">${primaryMoods}</div>
+          ${extraMoods ? `<details class="mood-more"><summary>Finer tone — pace, darkness, dialogue</summary><div class="moods">${extraMoods}</div></details>` : ''}
+        </div>
         <div>
           <div class="field-label">Runtime tonight <span class="runtime-val" data-pid="${p.id}">${capLabel}</span></div>
           <div class="runtime-row"><input type="range" min="70" max="${NO_LIMIT}" step="10" value="${capVal}" data-pid="${p.id}" data-runtime="1" aria-label="${escapeHtml(p.name || 'Person ' + (i + 1))}'s runtime cap" /></div>
+        </div>
+        <div>
+          <div class="field-label">How much you care tonight</div>
+          <div class="conviction-row" role="group" aria-label="How much ${escapeHtml(p.name || 'this person')} cares tonight">${convBtns}</div>
         </div>
       </div>`;
   }
@@ -356,6 +378,16 @@
       persist();
       return;
     }
+    const cb = e.target.closest('.conv-btn');
+    if (cb) {
+      const p = findPerson(cb.dataset.pid) || (state.me && state.me.id === cb.dataset.pid ? state.me : null);
+      if (p) {
+        p.conviction = cb.dataset.conviction;
+        cb.parentElement.querySelectorAll('.conv-btn').forEach((b) => { const on = b === cb; b.classList.toggle('active', on); b.setAttribute('aria-pressed', String(on)); });
+        persist();
+      }
+      return;
+    }
     const rm = e.target.closest('.remove-person');
     if (rm) { state.crew = state.crew.filter((p) => p.id !== rm.dataset.pid); saveCrew(); loadMemory(); renderCrew(); renderLedger(); if (poolOpen) renderPool(); return; }
     if (e.target.closest('#add-person')) {
@@ -391,6 +423,40 @@
     }
   });
   crewEl.addEventListener('change', (e) => { if (e.target.dataset.field !== 'name') return; if (state.mode === 'room') { syncMe(); return; } saveCrew(); renderCrewTabs(); renderLedger(); if (poolOpen) renderPool(); });
+
+  /* ---- group-composition constraints (item 11) --------------------------
+   * "Kids are here" caps the content rating, "school night" hard-caps runtime,
+   * and the no-… chips turn a content warning into a group veto. These feed
+   * straight into the engine's feasibility stage as sacred constraints.       */
+  const groupControlsEl = $('#group-controls');
+  const WARN_LABEL = { violence: 'Violence', gore: 'Gore', scary: 'Scares', disturbing: 'Disturbing', sexual: 'Sex', language: 'Language' };
+  const availableWarnings = () => { const s = new Set(); (window.CATALOG || []).forEach((c) => (c.warnings || []).forEach((w) => s.add(w))); return [...s].sort(); };
+  function renderGroupControls() {
+    if (!groupControlsEl) return;
+    const g = state.group;
+    const ratingChip = (key, label, hint) => `<button type="button" class="gc-chip ${g.rating === key ? 'active' : ''}" data-grating="${key || ''}" aria-pressed="${g.rating === key}" title="${hint}">${label}</button>`;
+    const warns = availableWarnings();
+    const warnChips = warns.map((w) => `<button type="button" class="gc-chip gc-warn ${g.warnings.includes(w) ? 'active' : ''}" data-gwarn="${w}" aria-pressed="${g.warnings.includes(w)}">${WARN_LABEL[w] || w}</button>`).join('');
+    groupControlsEl.innerHTML = `
+      <div class="gc-row"><span class="gc-label">Who's here</span><div class="gc-chips">
+        ${ratingChip(null, 'Just us', 'No content-rating cap')}
+        ${ratingChip('family', 'Family · ≤ PG-13', 'Cap the content rating at PG-13')}
+        ${ratingChip('kids', 'Kids · ≤ PG', 'Cap the content rating at PG')}
+      </div></div>
+      <div class="gc-row"><span class="gc-label">Tonight</span><div class="gc-chips">
+        <button type="button" class="gc-chip ${g.schoolNight ? 'active' : ''}" data-gschool="1" aria-pressed="${g.schoolNight}" title="Hard-cap runtime at two hours">🌙 School night · ≤ 2h</button>
+      </div></div>
+      ${warns.length ? `<div class="gc-row"><span class="gc-label">Rule out</span><div class="gc-chips">${warnChips}</div></div>` : ''}`;
+  }
+  if (groupControlsEl) groupControlsEl.addEventListener('click', (e) => {
+    const b = e.target.closest('.gc-chip'); if (!b) return;
+    const g = state.group;
+    if (b.dataset.grating !== undefined) g.rating = b.dataset.grating || null;
+    else if (b.dataset.gschool) g.schoolNight = !g.schoolNight;
+    else if (b.dataset.gwarn) { const i = g.warnings.indexOf(b.dataset.gwarn); if (i >= 0) g.warnings.splice(i, 1); else g.warnings.push(b.dataset.gwarn); }
+    renderGroupControls();
+    if (poolOpen) renderPool();
+  });
 
   // crew switcher (tabs)
   $('#crew-tabs').addEventListener('click', (e) => {
@@ -536,7 +602,7 @@
   function runResolve(withReveal) {
     loadMemory();
     let result;
-    try { result = E.resolve(engineCrew(), activeCatalog(), { exclude: [...state.exclude] }, state.memory); }
+    try { result = E.resolve(engineCrew(), activeCatalog(), { exclude: [...state.exclude], constraints: engineConstraints() }, state.memory); }
     catch (err) { toast(err.message || 'Something went wrong.'); return; }
     state.result = result; state.locked = false;
     if (!withReveal || result.empty || reduceMotion) { renderStage(); if (!reduceMotion) stageEl.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
@@ -624,9 +690,9 @@
       </div>
 
       <details class="reasoning">
-        <summary>The reasoning — five methods, how solid it is &amp; the full ranking</summary>
+        <summary>The reasoning — eleven methods, how solid it is &amp; the full ranking</summary>
         <div class="reasoning-inner">
-          ${buildMethodStrip(r.methods)}
+          ${buildMethodStrip(r.methods, r.kemeny)}
           <div class="sub-grid">
             <div class="card"><h4>Runner-up</h4>${runnerHtml}</div>
             <div class="card"><h4>Off the table</h4>${ruledHtml}</div>
@@ -675,7 +741,7 @@
     // Interactive counterfactual — the pivotal changes are already computed, so
     // let people *tug on a preference* and watch the pick flip, live.
     let whatIf = '';
-    if (state.mode !== 'room' && !rob.robust && rob.pivotal.length) {
+    if (!rob.robust && rob.pivotal.length) {
       const seen = new Set(); const chips = [];
       for (const pv of rob.pivotal) {
         if (seen.has(pv.who + pv.genre)) continue; seen.add(pv.who + pv.genre);
@@ -694,8 +760,31 @@
     body.querySelectorAll('.whatif-chip').forEach((chip) => chip.addEventListener('click', () => {
       body.querySelectorAll('.whatif-chip').forEach((c) => c.classList.remove('active'));
       chip.classList.add('active');
-      previewWhatIf(chip.dataset.who, chip.dataset.genre, chip.dataset.to, r.pick.id);
+      if (state.mode === 'room') {
+        // Only the server holds everyone's tastes — ask it to compute the flip.
+        const out = document.querySelector('#whatif-out');
+        if (out) out.innerHTML = `<div class="wi-card wi-pending">Recomputing across the room…</div>`;
+        Room.send({ t: 'whatif', who: chip.dataset.who, genre: chip.dataset.genre, to: chip.dataset.to });
+      } else {
+        previewWhatIf(chip.dataset.who, chip.dataset.genre, chip.dataset.to, r.pick.id);
+      }
     }));
+  }
+
+  // Render a room counterfactual the server computed (item 15).
+  function onRoomWhatIf(m) {
+    const out = document.querySelector('#whatif-out');
+    if (!out) return;
+    if (m.empty) { out.innerHTML = `<div class="wi-card">That change empties the menu.</div>`; return; }
+    const sub = m.same
+      ? 'That nudge alone isn’t enough to move it.'
+      : (m.leastHappy ? `Now <b>${escapeHtml(m.leastHappy.name)}</b> is the least-keen (${escapeHtml((m.leastHappy.label || '').toLowerCase())}).` : 'The pick would change.');
+    out.innerHTML = `<div class="wi-card">
+      <div class="wi-text">
+        <div class="wi-title">→ ${escapeHtml(m.title)}${m.same ? ' <span class="wi-same">(no change — the pick holds)</span>' : ''}</div>
+        <div class="wi-sub">${sub}</div>
+      </div>
+    </div>`;
   }
 
   // Non-destructively resolve a hypothetical (one person nudges one genre) and
@@ -722,11 +811,24 @@
     </div>`;
   }
 
-  function buildMethodStrip(methods) {
+  const FAMILY_LABEL = { welfare: 'Welfare', egalitarian: 'Egalitarian', positional: 'Positional / ranked', condorcet: 'Condorcet / pairwise' };
+  function buildMethodStrip(methods, kemeny) {
     if (!methods) return '';
-    const chips = methods.winners.map((mw) => `<div class="method ${mw.isPick ? 'agree' : ''}"><span class="m-label">${mw.label}</span><span class="m-title">${escapeHtml(mw.title)}${mw.isPick ? ' <span class="m-check" aria-hidden="true">✓</span>' : ''}</span></div>`).join('');
+    const byFam = {};
+    methods.winners.forEach((mw) => { (byFam[mw.family] = byFam[mw.family] || []).push(mw); });
+    const groups = ['welfare', 'egalitarian', 'positional', 'condorcet'].filter((f) => byFam[f]).map((f) => {
+      const chips = byFam[f].map((mw) => `<div class="method ${mw.isPick ? 'agree' : ''}"><span class="m-label">${mw.label}</span><span class="m-title">${escapeHtml(mw.title)}${mw.isPick ? ' <span class="m-check" aria-hidden="true">✓</span>' : ''}</span></div>`).join('');
+      return `<div class="method-fam"><div class="mf-label">${FAMILY_LABEL[f]}</div><div class="method-grid">${chips}</div></div>`;
+    }).join('');
     const cond = methods.condorcet ? `<span class="cond-badge" title="Beats every alternative head-to-head">${methods.condorcetIsPick ? '★ Condorcet winner' : 'Condorcet: ' + escapeHtml(methods.condorcet)}</span>` : `<span class="cond-badge muted" title="No option beats all others head-to-head">No Condorcet winner (a genuine cycle)</span>`;
-    return `<div class="card"><div class="mp-head"><h4>How the five methods voted</h4><span class="mp-count">${methods.agreeCount} of ${methods.total} back this pick ${cond}</span></div><div class="method-grid">${chips}</div></div>`;
+    let kem = '';
+    if (kemeny && kemeny.order && kemeny.order.length) {
+      const inv = kemeny.inversions ? `, ${kemeny.inversions} forced inversion${kemeny.inversions > 1 ? 's' : ''}` : '';
+      const items = kemeny.order.slice(0, 6).map((t) => `<li>${escapeHtml(t)}</li>`).join('');
+      kem = `<div class="kemeny"><div class="kemeny-head">Kemeny–Young consensus order <span class="k-sub">— the ranking that overrules the fewest of your pairwise preferences (${Math.round((kemeny.agreement || 0) * 100)}% agreement${inv})</span></div><ol class="kemeny-list">${items}</ol></div>`;
+    }
+    const fam = methods.familiesBacking ? ` · ${methods.familiesBacking.length} of ${methods.familiesTotal} philosophies` : '';
+    return `<div class="card"><div class="mp-head"><h4>How the eleven methods voted</h4><span class="mp-count">${methods.agreeCount} of ${methods.total} back this pick${fam} ${cond}</span></div>${groups}${kem}</div>`;
   }
 
   function buildBreakdown(r, colors) {
@@ -786,6 +888,40 @@
     Sound.lock();
     renderLedger(); toggleLedger(true);
     toast('Locked in. The ledger remembers who compromised.');
+    renderFeedback(r);
+  }
+
+  // Post-watch feedback loop (item 12): after locking, let the crew say how the
+  // night actually landed. recordFeedback folds the surprise (actual − predicted)
+  // into each person's per-genre calibration, so the model tracks reality over time.
+  const PW_FACES = [{ k: 0.3, e: '😐', l: 'Meh' }, { k: 0.65, e: '🙂', l: 'Good' }, { k: 0.95, e: '😍', l: 'Loved it' }];
+  function renderFeedback(r) {
+    if (!r || !r.pick || state.mode === 'room') return;               // solo only — rooms lock server-side
+    const host = stageEl.querySelector('.verdict-body');
+    if (!host || host.querySelector('.postwatch')) return;
+    const people = (r.pickRow ? r.pickRow.perPerson : r.ranking[0].perPerson);
+    const rows = people.map((pp) => `<div class="pw-row" data-name="${escapeHtml(pp.name)}"><span class="pw-who">${escapeHtml(pp.name)}</span><span class="pw-faces">${PW_FACES.map((f) => `<button type="button" class="pw-face" data-enjoyed="${f.k}" aria-label="${escapeHtml(pp.name)}: ${f.l}" title="${f.l}">${f.e}</button>`).join('')}</span></div>`).join('');
+    const el = document.createElement('div');
+    el.className = 'postwatch';
+    el.innerHTML = `<div class="pw-head">Watched it? Tell the model how it landed — it tunes each person's taste over time.</div><div class="pw-rows">${rows}</div><button class="pw-save" id="pw-save" disabled>Save &amp; calibrate</button>`;
+    host.appendChild(el);
+    const ratings = {};
+    el.querySelectorAll('.pw-face').forEach((btn) => btn.addEventListener('click', () => {
+      const row = btn.closest('.pw-row');
+      row.querySelectorAll('.pw-face').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      ratings[row.dataset.name] = +btn.dataset.enjoyed;
+      el.querySelector('#pw-save').disabled = false;
+    }));
+    el.querySelector('#pw-save').addEventListener('click', () => {
+      const arr = Object.entries(ratings).map(([name, enjoyed]) => ({ name, enjoyed }));
+      if (!arr.length) return;
+      loadMemory();
+      state.memory = E.recordFeedback(state.memory, r.pick, arr);
+      saveMemory();
+      el.innerHTML = `<div class="pw-done">✓ Thanks — the model just learned from tonight. Future picks will reflect it.</div>`;
+      toast('Feedback saved — each person’s taste model updated.');
+    });
   }
 
   /* =========================================================================
@@ -913,8 +1049,8 @@
     };
   })();
 
-  const makeMe = (name) => ({ id: 'me', name: name || '', genres: {}, mood: { brain: 0.5, intensity: 0.5, levity: 0.5 }, runtimeCap: NO_LIMIT });
-  const mePayload = () => ({ name: state.me.name, genres: state.me.genres, mood: state.me.mood, runtimeCap: state.me.runtimeCap >= NO_LIMIT ? 999 : state.me.runtimeCap });
+  const makeMe = (name) => ({ id: 'me', name: name || '', genres: {}, mood: { brain: 0.5, intensity: 0.5, levity: 0.5 }, runtimeCap: NO_LIMIT, conviction: 'normal' });
+  const mePayload = () => ({ name: state.me.name, genres: state.me.genres, mood: state.me.mood, runtimeCap: state.me.runtimeCap >= NO_LIMIT ? 999 : state.me.runtimeCap, conviction: state.me.conviction || 'normal' });
   let syncTimer;
   function syncMe() { if (state.mode !== 'room') return; clearTimeout(syncTimer); syncTimer = setTimeout(() => Room.send({ t: 'me', name: state.me.name, person: mePayload() }), 220); }
 
@@ -932,6 +1068,7 @@
     else if (m.t === 'locked') onLocked();
     else if (m.t === 'error') { if (reconnecting) { reconnecting = false; toast(m.msg || 'The room is gone.'); leaveRoom(true); } else setRoomNote(m.msg); }
     else if (m.t === 'notice') toast(m.msg);
+    else if (m.t === 'whatif') onRoomWhatIf(m);
   }
 
   function enterRoom(m) {
@@ -1222,6 +1359,7 @@
   loadMemory();
   renderCrewTabs();
   renderCrew();
+  renderGroupControls();
   renderLedger();
   initMotion();
   Sound.initToggle();

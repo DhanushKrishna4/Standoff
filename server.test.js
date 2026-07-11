@@ -67,6 +67,16 @@ async function main() {
   assert.ok(hVer.analysis && hVer.analysis.robustness && hVer.analysis.strategy, 'the server ships the robustness + strategy analysis');
   ok('settle broadcasts one identical, fully-analysed verdict to all');
 
+  // --- room counterfactual (item 15): the server computes "what would flip it" ---
+  // Only the server holds everyone's tastes, so a member asks it directly and the
+  // reply goes to just that member (never revealing others' preferences).
+  const wiResp = next(guest, (m) => m.t === 'whatif');
+  guest.send(JSON.stringify({ t: 'whatif', who: 'Ava', genre: 'Action', to: 'love' }));
+  const wi = await wiResp;
+  assert.ok(wi.empty || typeof wi.title === 'string', 'the server returns a counterfactual outcome (a title, or an empty-menu flag)');
+  assert.ok(wi.empty || typeof wi.same === 'boolean', 'and reports whether the pick would still hold');
+  ok('a room member can ask the server what would flip the pick (item 15)');
+
   // --- host-only controls: a guest cannot settle ---
   guest.send(JSON.stringify({ t: 'settle' }));
   const raced = await Promise.race([next(host, (m) => m.t === 'verdict').then(() => 'leaked'), new Promise((r) => setTimeout(() => r('ignored'), 500))]);

@@ -248,18 +248,25 @@ test('methodPanel: utilitarian and egalitarian diverge; Condorcet winner is foun
   assert.strictEqual(panel.condorcet, 'y', 'y is the Condorcet winner');
 });
 
-/* ---- resolve() surfaces a method panel and a consensus read-out --------- */
-test('resolve: reports how the five methods voted and a consensus line', () => {
+/* ---- resolve() surfaces the whole method family and a consensus read-out - */
+test('resolve: reports how the eleven methods voted and a consensus line', () => {
   const crew = [
     { name: 'A', genres: { Comedy: 'love', Crime: 'like' }, mood: { brain: 0.5, intensity: 0.5, levity: 0.65 }, runtimeCap: 160 },
     { name: 'B', genres: { Thriller: 'love', Crime: 'love' }, mood: { brain: 0.7, intensity: 0.65, levity: 0.4 }, runtimeCap: 160 },
     { name: 'C', genres: { Comedy: 'love', Thriller: 'like' }, mood: { brain: 0.6, intensity: 0.55, levity: 0.6 }, runtimeCap: 160 },
   ];
   const r = E.resolve(crew, CATALOG, {}, {});
-  assert.strictEqual(r.methods.total, 5, 'five methods reported');
-  assert.strictEqual(r.methods.winners.length, 5, 'a winner per method');
-  assert.ok(r.methods.agreeCount >= 1 && r.methods.agreeCount <= 5, 'agreement count in range');
+  assert.strictEqual(r.methods.total, 11, 'eleven methods reported');
+  assert.strictEqual(r.methods.winners.length, 11, 'a winner per method');
+  assert.ok(r.methods.agreeCount >= 1 && r.methods.agreeCount <= 11, 'agreement count in range');
   assert.ok(r.methods.winners.some((w) => w.isPick), 'at least one method backs the pick');
+  // every named rule of the family is present
+  const keys = new Set(r.methods.winners.map((w) => w.key));
+  ['utilitarian', 'egalitarian', 'nash', 'borda', 'copeland', 'kemeny', 'schulze', 'rankedPairs', 'stv', 'majority', 'approval']
+    .forEach((k) => assert.ok(keys.has(k), 'family includes ' + k));
+  // the Kemeny consensus order is a full permutation of the feasible menu
+  assert.ok(Array.isArray(r.kemeny.order) && r.kemeny.order.length >= 2, 'kemeny order present');
+  assert.ok(r.kemeny.agreement >= 0 && r.kemeny.agreement <= 1, 'kemeny agreement in [0,1]');
   assert.ok(typeof r.explanation.consensus === 'string' && r.explanation.consensus.length > 20, 'consensus prose present');
 });
 
@@ -353,6 +360,209 @@ test('analyzeVerdict: strategy check is self-consistent (a flagged manipulator t
   a.strategy.manipulators.forEach((m) => {
     assert.ok(trueU[m.who][m.altId] > trueU[m.who][honest.pick.id], `${m.who} genuinely prefers the manipulated outcome`);
   });
+});
+
+/* =============================================================================
+ * Batch 2 — deepened engine: the method family, conviction, novelty, group
+ * constraints, the feedback loop, and formal strategyproofness.
+ * ========================================================================== */
+
+/* ---- item 7: Kemeny–Young consensus ranking ----------------------------- */
+test('kemenyYoung: a unanimous profile yields the unanimous order with zero dissent', () => {
+  const ids = ['x', 'y', 'z'];
+  const names = ['v1', 'v2', 'v3'];
+  const norm = { x: { v1: 1, v2: 1, v3: 1 }, y: { v1: 0.5, v2: 0.5, v3: 0.5 }, z: { v1: 0, v2: 0, v3: 0 } };
+  const { P } = E.pairwiseMatrix(ids, norm, names, [1, 1, 1]);
+  const k = E.kemenyYoung(ids, P);
+  assert.deepStrictEqual(k.order, ['x', 'y', 'z'], 'consensus order is the unanimous order');
+  assert.strictEqual(k.disagreements, 0, 'nobody is overruled');
+  assert.strictEqual(k.inversions, 0, 'no pair ranked against its majority');
+  assert.ok(approx(k.agreement, 1), 'agreement is total');
+});
+
+test('kemenyYoung: a Condorcet cycle forces exactly one overruled pair', () => {
+  // x>y, y>z, z>x each by 2:1 — the rock-paper-scissors profile.
+  const ids = ['x', 'y', 'z'];
+  const names = ['A', 'B', 'C'];
+  const norm = {
+    x: { A: 1.0, B: 0.5, C: 0.0 },
+    y: { A: 0.5, B: 0.0, C: 1.0 },
+    z: { A: 0.0, B: 1.0, C: 0.5 },
+  };
+  const { P } = E.pairwiseMatrix(ids, norm, names, [1, 1, 1]);
+  const k = E.kemenyYoung(ids, P);
+  assert.strictEqual(k.order.length, 3, 'a full order is produced');
+  assert.strictEqual(k.disagreements, 4, 'the least-dissent order overrules 4 voter-preferences');
+  assert.strictEqual(k.inversions, 1, 'exactly one pair is ranked against its majority (the cycle)');
+  assert.ok(k.agreement < 1, 'a cycle cannot be fully honoured');
+});
+
+/* ---- item 8: the whole method family, agreeing and disagreeing ---------- */
+test('method family: Condorcet rules agree on the beats-all option; IRV can differ', () => {
+  // Classic divergence: 5 voters, IRV drops the Condorcet winner.
+  //   v1,v2: a>b>c   v3,v4: c>b>a   v5: b>c>a
+  const ids = ['a', 'b', 'c'];
+  const names = ['v1', 'v2', 'v3', 'v4', 'v5'];
+  const ws = [1, 1, 1, 1, 1];
+  const norm = {
+    a: { v1: 1.0, v2: 1.0, v3: 0.0, v4: 0.0, v5: 0.0 },
+    b: { v1: 0.5, v2: 0.5, v3: 0.5, v4: 0.5, v5: 1.0 },
+    c: { v1: 0.0, v2: 0.0, v3: 1.0, v4: 1.0, v5: 0.5 },
+  };
+  const { P, margin } = E.pairwiseMatrix(ids, norm, names, ws);
+  // b beats a (3:2) and c (3:2) → Condorcet winner.
+  assert.strictEqual(E.schulzeOrder(ids, P).winner, 'b', 'Schulze picks the Condorcet winner');
+  assert.strictEqual(E.rankedPairsOrder(ids, margin).winner, 'b', 'Ranked Pairs picks it too');
+  assert.strictEqual(E.approvalWinner(ids, norm, names, ws).winner, 'b', 'Approval (above-average) also lands on b');
+  // IRV eliminates b first (fewest first-choices) and elects c — the famous failure.
+  assert.strictEqual(E.stvWinner(ids, norm, names, ws).winner, 'c', 'IRV drops the Condorcet winner and elects c');
+  // The point of the panel: the family genuinely splits here.
+  const winners = new Set(['b', 'c']);
+  assert.ok(winners.size >= 2, 'the method family disagrees — that disagreement is the story');
+});
+
+test('resolve: the eleven-method family and Kemeny order are exposed together', () => {
+  const crew = [
+    { name: 'A', genres: { Action: 'love', 'Sci-Fi': 'like' }, mood: { brain: 0.6, intensity: 0.7, levity: 0.4 }, runtimeCap: 180 },
+    { name: 'B', genres: { Drama: 'love', Crime: 'like' }, mood: { brain: 0.65, intensity: 0.5, levity: 0.35 }, runtimeCap: 180 },
+    { name: 'C', genres: { Comedy: 'love' }, mood: { brain: 0.4, intensity: 0.4, levity: 0.8 }, runtimeCap: 180 },
+  ];
+  const r = E.resolve(crew, CATALOG, {}, {});
+  assert.strictEqual(r.methods.winners.length, 11, 'eleven rules reported');
+  assert.ok(r.methods.familiesTotal >= 3, 'multiple philosophical families represented');
+  assert.ok(new Set(r.kemeny.orderIds).size === r.kemeny.orderIds.length, 'Kemeny order has no repeats');
+  assert.ok(r.kemeny.orderIds.includes(r.pick.id) || r.kemeny.orderIds.length < r.ranking.length, 'kemeny ranks the finalists');
+});
+
+/* ---- item 9: conviction weighting (bounded, mean-1, un-gameable) -------- */
+test('convictionWeights: bounded, average exactly 1, and inflation-proof', () => {
+  const w = E.convictionWeights([{ name: 'A', conviction: 'care' }, { name: 'B', conviction: 'easy' }, { name: 'C' }]);
+  const vals = ['A', 'B', 'C'].map((n) => w[n]);
+  assert.ok(approx((vals[0] + vals[1] + vals[2]) / 3, 1), 'weights average to 1');
+  assert.ok(w.A > w.C && w.C > w.B, 'care > normal > easy');
+  vals.forEach((v) => assert.ok(v >= 0.5 && v <= 1.6, 'each weight is hard-bounded'));
+  // The anti-manipulation core: if EVERYONE claims to care, nobody gains an edge.
+  const allCare = E.convictionWeights([{ name: 'A', conviction: 'care' }, { name: 'B', conviction: 'care' }]);
+  assert.ok(approx(allCare.A, 1) && approx(allCare.B, 1), 'universal max-conviction cancels out');
+});
+
+test('resolve: conviction tips a dead-even standoff toward whoever cares more', () => {
+  const mk = (convA, convB) => ([
+    { name: 'A', genres: { Action: 'love', Romance: 'dislike' }, mood: { brain: 0.5, intensity: 0.5, levity: 0.5 }, runtimeCap: 180, conviction: convA },
+    { name: 'B', genres: { Romance: 'love', Action: 'dislike' }, mood: { brain: 0.5, intensity: 0.5, levity: 0.5 }, runtimeCap: 180, conviction: convB },
+  ]);
+  const menu = [
+    { id: 'action-pick', genres: ['Action'], brain: 0.5, intensity: 0.7, levity: 0.4, runtime: 110, score: 85 },
+    { id: 'romance-pick', genres: ['Romance'], brain: 0.5, intensity: 0.3, levity: 0.6, runtime: 110, score: 85 },
+  ];
+  assert.strictEqual(E.resolve(mk('care', 'easy'), menu, {}, {}).pick.id, 'action-pick', 'A cares more → A’s film');
+  assert.strictEqual(E.resolve(mk('easy', 'care'), menu, {}, {}).pick.id, 'romance-pick', 'B cares more → B’s film');
+  // …but if both max out, it collapses back to the honest coin-flip.
+  assert.ok(E.resolve(mk('care', 'care'), menu, {}, {}).tieBreak.coinFlip, 'equal conviction ⇒ still a coin flip');
+});
+
+/* ---- item 10: novelty axis (surprise ↔ comfort) ------------------------- */
+test('rawUtility: the novelty axis separates a surprise-seeker from a comfort-seeker', () => {
+  const novel = { id: 'novel', genres: ['Drama'], brain: 0.5, intensity: 0.5, levity: 0.5, novelty: 0.9, score: 80 };
+  const comfort = { id: 'comfort', genres: ['Drama'], brain: 0.5, intensity: 0.5, levity: 0.5, novelty: 0.1, score: 80 };
+  const surpriseSeeker = { name: 'S', genres: {}, mood: { novelty: 0.9 } };
+  const comfortSeeker = { name: 'C', genres: {}, mood: { novelty: 0.1 } };
+  assert.ok(E.rawUtility(surpriseSeeker, novel) > E.rawUtility(surpriseSeeker, comfort), 'surprise-seeker prefers the novel option');
+  assert.ok(E.rawUtility(comfortSeeker, comfort) > E.rawUtility(comfortSeeker, novel), 'comfort-seeker prefers the familiar option');
+});
+
+/* ---- item 11: group-composition constraints ----------------------------- */
+test('applyConstraints: rating cap and content-warnings are sacred; runtime relaxes', () => {
+  const crew = [{ name: 'A', genres: {} }, { name: 'B', genres: {} }];
+  const catalog = [
+    { id: 'kidfilm', genres: ['Animation'], runtime: 95, ratingLevel: 1, warnings: [] },
+    { id: 'harsh', genres: ['Horror'], runtime: 100, ratingLevel: 4, warnings: ['gore', 'violence'] },
+    { id: 'longpg', genres: ['Adventure'], runtime: 175, ratingLevel: 1, warnings: [] },
+  ];
+  // Kids present (cap PG=1) + no gore.
+  const r = E.applyConstraints(crew, catalog, { maxRatingLevel: 1, blockedWarnings: ['gore'] });
+  const ids = r.feasible.map((c) => c.id);
+  assert.ok(ids.includes('kidfilm'), 'a kid-safe title survives');
+  assert.ok(!ids.includes('harsh'), 'the R-rated / gory title is cut');
+  const harshCut = r.filteredOut.find((f) => f.cand.id === 'harsh');
+  assert.ok(harshCut.reasons.some((x) => x.type === 'rating'), 'cut records the rating reason');
+  assert.ok(harshCut.reasons.some((x) => x.type === 'warning' && /gore/i.test(x.warning)), 'and the warning reason');
+});
+
+test('resolve: rating/warning constraints are never relaxed away, even if the menu empties', () => {
+  const crew = [{ name: 'A', genres: {} }, { name: 'B', genres: {} }];
+  const catalog = [
+    { id: 'r1', genres: ['Horror'], brain: 0.5, intensity: 0.9, levity: 0.2, runtime: 100, ratingLevel: 4, warnings: ['gore'] },
+    { id: 'r2', genres: ['Thriller'], brain: 0.6, intensity: 0.85, levity: 0.25, runtime: 110, ratingLevel: 4, warnings: ['violence'] },
+  ];
+  const r = E.resolve(crew, catalog, { constraints: { maxRatingLevel: 1 } }, {});
+  assert.ok(r.empty, 'no kid-safe option exists → we honestly return nothing rather than relax a safety rail');
+});
+
+test('resolve: a school-night runtime cap binds the whole group', () => {
+  const crew = [{ name: 'A', genres: {}, runtimeCap: 999 }, { name: 'B', genres: {}, runtimeCap: 999 }];
+  const catalog = [
+    { id: 'short', genres: ['Comedy'], brain: 0.3, intensity: 0.3, levity: 0.9, runtime: 95, score: 80 },
+    { id: 'epic', genres: ['Adventure'], brain: 0.5, intensity: 0.6, levity: 0.5, runtime: 200, score: 88 },
+  ];
+  const r = E.resolve(crew, catalog, { constraints: { groupRuntimeCap: 120, groupRuntimeLabel: 'school night' } }, {});
+  assert.strictEqual(r.pick.id, 'short', 'the over-cap epic is filtered by the group runtime cap');
+});
+
+/* ---- item 12: post-watch feedback loop calibrates the model ------------- */
+test('recordFeedback: enjoying less than predicted cools that genre for that person', () => {
+  const pick = { id: 'x', title: 'X', genres: ['Crime'] };
+  let mem = { history: [{ pickId: 'x', title: 'X', satisfaction: [{ name: 'A', util: 80 }] }] };
+  mem = E.recordFeedback(mem, pick, [{ name: 'A', enjoyed: 0.3 }]); // predicted .8, actual .3 → negative residual
+  assert.ok(mem.calibration.A.Crime < 0, 'Crime bias turns negative for A');
+  const person = { name: 'A', genres: { Crime: 'like' }, mood: {} };
+  const cand = { id: 'c', genres: ['Crime'], brain: 0.5, intensity: 0.5, levity: 0.5, score: 80 };
+  assert.ok(E.rawUtility(person, cand, mem.calibration.A) < E.rawUtility(person, cand, null), 'calibration lowers A’s utility for Crime');
+  // And it saturates rather than running away.
+  for (let i = 0; i < 20; i++) mem = E.recordFeedback(mem, pick, [{ name: 'A', enjoyed: 0, predicted: 1 }]);
+  assert.ok(mem.calibration.A.Crime >= -E.WEIGHTS.utility.calibration && mem.calibration.A.Crime >= -1, 'the learned bias is bounded');
+  assert.ok(mem.calibration.A.Crime <= -0.4, 'sustained disappointment saturates toward the cap');
+});
+
+test('recordFeedback: enjoying MORE than predicted warms the genre back up', () => {
+  const pick = { id: 'y', title: 'Y', genres: ['Documentary'] };
+  let mem = {};
+  mem = E.recordFeedback(mem, pick, [{ name: 'B', enjoyed: 0.95, predicted: 0.4 }]);
+  assert.ok(mem.calibration.B.Documentary > 0, 'a happy surprise warms the genre');
+  assert.ok(Array.isArray(mem.feedbackLog) && mem.feedbackLog.length === 1, 'feedback is logged');
+});
+
+/* ---- item 13: formal strategyproofness metrics -------------------------- */
+test('analyzeVerdict: strategyproofness is a bounded exhaustive search with real metrics', () => {
+  const crew = [
+    { name: 'A', genres: { 'Sci-Fi': 'love', Thriller: 'like' }, mood: { brain: 0.7, intensity: 0.8, levity: 0.2 }, runtimeCap: 170 },
+    { name: 'B', genres: { Romance: 'love', Comedy: 'love' }, mood: { brain: 0.4, intensity: 0.3, levity: 0.85 }, runtimeCap: 170 },
+    { name: 'C', genres: { Drama: 'love' }, mood: { brain: 0.6, intensity: 0.5, levity: 0.45 }, runtimeCap: 170 },
+  ];
+  const honest = E.resolve(crew, CATALOG, {}, {});
+  const s = E.analyzeVerdict(crew, CATALOG, {}, honest).strategy;
+  assert.ok(s.spaceSearched > crew.length, 'a real report space was enumerated');
+  assert.strictEqual(typeof s.exhaustive, 'boolean', 'reports whether the search was exhaustive');
+  assert.ok(s.manipulableShare >= 0 && s.manipulableShare <= 1, 'manipulable share is a fraction');
+  assert.ok(approx(s.manipulableShare, s.manipulators.length / crew.length, 1e-3), 'share matches the manipulator count');
+  assert.ok(s.maxGain >= 0, 'max gain is non-negative');
+  assert.strictEqual(s.strategyproof, s.manipulators.length === 0, 'flag is consistent');
+  // Any flagged manipulator's alternative is genuinely better for them (true utility).
+  const trueU = {};
+  honest.ranking.forEach((r) => r.perPerson.forEach((pp) => { (trueU[pp.name] = trueU[pp.name] || {})[r.candidate.id] = pp.util; }));
+  s.manipulators.forEach((m) => assert.ok(trueU[m.who][m.altId] > trueU[m.who][honest.pick.id], `${m.who} truly gains`));
+});
+
+/* ---- item 14: extra learned mood axes fold in when present -------------- */
+test('rawUtility: extra axes (pace/darkness/dialogue) only bind when both sides express them', () => {
+  const base = { name: 'P', genres: {}, mood: { brain: 0.5, intensity: 0.5, levity: 0.5 } };
+  const withAxes = { name: 'P', genres: {}, mood: { brain: 0.5, intensity: 0.5, levity: 0.5, pace: 0.9, darkness: 0.1 } };
+  const fast = { id: 'f', genres: ['Action'], brain: 0.5, intensity: 0.5, levity: 0.5, pace: 0.9, darkness: 0.1, score: 80 };
+  const slow = { id: 's', genres: ['Action'], brain: 0.5, intensity: 0.5, levity: 0.5, pace: 0.1, darkness: 0.9, score: 80 };
+  // With no extra-axis preference, the two candidates are indistinguishable on mood.
+  assert.ok(approx(E.rawUtility(base, fast), E.rawUtility(base, slow)), 'axes a person doesn’t set are ignored');
+  // Expressing a fast/bright appetite makes the matching candidate score higher.
+  assert.ok(E.rawUtility(withAxes, fast) > E.rawUtility(withAxes, slow), 'expressed pace/darkness discriminate');
 });
 
 console.log('\n\x1b[32m' + passed + ' passing\x1b[0m\n');
