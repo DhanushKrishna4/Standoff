@@ -16,6 +16,12 @@
        different hosts, point the client at the server here (defaults to same-origin).
        e.g. <meta name="standoff-ws" content="wss://standoff-rooms.onrender.com" /> -->
 
+  <!-- Accounts + cloud sync (item 3): Supabase magic-link auth + Postgres. Both are
+       public values (the key is a browser-safe publishable key; row-level security
+       protects the data). Absent → the app is local-only. -->
+  <meta name="supabase-url" content="https://jmvutrnsxcawwbxjgnrh.supabase.co" />
+  <meta name="supabase-key" content="sb_publishable_zqEGlwCVyYHHi2yu1-7ikQ_YibQiyXe" />
+
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..800&family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />

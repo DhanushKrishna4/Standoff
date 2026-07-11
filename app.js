@@ -1037,21 +1037,58 @@
    * ====================================================================== */
   const SESSION_KEY = 'standoff:session:v1';
   const Account = (() => {
-    let session = store.get(SESSION_KEY);                        // { token, email } | null
+    // Real backend: Supabase magic-link auth + durable Postgres, all over fetch
+    // (no dependency, no build step). Configured via <meta> tags or window globals;
+    // absent config → the app is local-only (the no-account default).
+    const meta = (n) => { const m = document.querySelector('meta[name="' + n + '"]'); return m && m.content ? m.content.trim() : ''; };
+    const SB_URL = (window.SUPABASE_URL || meta('supabase-url')).replace(/\/+$/, '');
+    const SB_KEY = window.SUPABASE_KEY || meta('supabase-key');
+    const enabled = !!(SB_URL && SB_KEY);
     const modal = $('#account-modal'), body = $('#account-body'), btn = $('#account-btn');
-    const apiBase = () => (window.STANDOFF_API || '').trim().replace(/\/$/, '') || location.origin;
+    let session = store.get(SESSION_KEY);   // { access_token, refresh_token, expires_at, email } | null
+    if (session && !session.access_token) { session = null; store.del(SESSION_KEY); }   // discard old passphrase-era sessions
 
-    async function api(path, method, payload) {
-      const res = await fetch(apiBase() + path, {
-        method: method || 'GET',
-        headers: Object.assign({ 'Content-Type': 'application/json' }, session ? { Authorization: 'Bearer ' + session.token } : {}),
+    /* ---- pure helpers (UTF-8-safe JWT decode + magic-link hash parse) ---- */
+    function decodeJwt(t) {
+      try {
+        const b = String(t).split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+        const json = decodeURIComponent(atob(b).split('').map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
+        return JSON.parse(json);
+      } catch (e) { return {}; }
+    }
+    function parseAuthHash(hash) {
+      if (!hash || hash.indexOf('access_token=') < 0) return null;
+      const p = new URLSearchParams(hash.replace(/^#/, ''));
+      const at = p.get('access_token'); if (!at) return null;
+      return { access_token: at, refresh_token: p.get('refresh_token') || '', expires_in: Number(p.get('expires_in')) || 3600 };
+    }
+    const sessionFrom = (t) => ({ access_token: t.access_token, refresh_token: t.refresh_token, expires_at: Date.now() + (t.expires_in || 3600) * 1000, email: decodeJwt(t.access_token).email || '' });
+
+    /* ---- Supabase REST (Auth = GoTrue, data = PostgREST) ---- */
+    async function sbAuth(path, payload) {
+      const res = await fetch(SB_URL + '/auth/v1/' + path, { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SB_KEY }, body: JSON.stringify(payload) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.msg || d.error_description || d.error || ('Sign-in failed (' + res.status + ').'));
+      return d;
+    }
+    async function refresh() {
+      if (!session || !session.refresh_token) { session = null; store.del(SESSION_KEY); return false; }
+      try { session = sessionFrom(await sbAuth('token?grant_type=refresh_token', { refresh_token: session.refresh_token })); store.set(SESSION_KEY, session); return true; }
+      catch (e) { session = null; store.del(SESSION_KEY); renderBtn(); return false; }
+    }
+    async function rest(method, path, payload, extra) {
+      if (session && session.expires_at && session.expires_at < Date.now() + 60000) await refresh();
+      const call = () => fetch(SB_URL + '/rest/v1/' + path, {
+        method,
+        headers: Object.assign({ 'Content-Type': 'application/json', apikey: SB_KEY, Authorization: 'Bearer ' + (session ? session.access_token : SB_KEY) }, extra || {}),
         body: payload ? JSON.stringify(payload) : undefined,
       });
-      let data = {}; try { data = await res.json(); } catch (e) {}
-      if (!res.ok) throw new Error(data.error || ('Request failed (' + res.status + ').'));
-      return data;
+      let res = await call();
+      if (res.status === 401 && (await refresh())) res = await call();
+      return res;
     }
 
+    /* ---- the sync blob (device-agnostic snapshot of everything worth keeping) ---- */
     function snapshot() {
       const crews = state.crews.filter((c) => !c.ephemeral).map((c) => ({ id: c.id, name: c.name, crew: c.crew }));
       const memories = {};
@@ -1066,62 +1103,78 @@
       if (data.memories) Object.keys(data.memories).forEach((id) => store.set(memKey(id), data.memories[id]));
       return true;
     }
-
+    async function pull() {
+      const res = await rest('GET', 'sync?select=data&limit=1');
+      if (!res.ok) return null;
+      const rows = await res.json().catch(() => []);
+      return rows && rows[0] ? rows[0].data : null;
+    }
     let pushTimer = null;
     function push() {
-      if (!session) return;
+      if (!session || !enabled) return;
       clearTimeout(pushTimer);
-      pushTimer = setTimeout(() => { api('/api/data', 'PUT', { data: snapshot() }).catch(() => {}); }, 900);
+      pushTimer = setTimeout(() => {
+        const uid = decodeJwt(session.access_token).sub;
+        rest('POST', 'sync?on_conflict=user_id', { user_id: uid, data: snapshot(), updated_at: new Date().toISOString() }, { Prefer: 'resolution=merge-duplicates,return=minimal' }).catch(() => {});
+      }, 900);
     }
 
-    const renderBtn = () => { if (btn) btn.textContent = session ? ('☁ ' + session.email.split('@')[0]) : 'Sign in ☁'; };
-
+    /* ---- UI ---- */
+    const renderBtn = () => { if (!btn) return; btn.style.display = enabled ? '' : 'none'; btn.textContent = session ? ('☁ ' + (session.email || 'account').split('@')[0]) : 'Sign in ☁'; };
     function renderBody(msg, err) {
+      if (!body) return;
+      const note = msg ? '<p class="rm-note' + (err ? ' err' : '') + '">' + escapeHtml(msg) + '</p>' : '';
+      if (!enabled) { body.innerHTML = '<p class="rm-note">Cloud sync isn’t configured for this build.</p>'; return; }
       if (session) {
         body.innerHTML =
-          '<div class="acc-status"><span class="acc-dot"></span>Signed in as <b>' + escapeHtml(session.email) + '</b> — crews sync automatically.</div>' +
-          '<div class="rm-join"><button class="af-cancel" id="acc-pull" style="flex:1">Refresh from cloud</button><button class="af-cancel" id="acc-logout" style="flex:1">Log out</button></div>' +
-          (msg ? '<p class="rm-note' + (err ? ' err' : '') + '">' + escapeHtml(msg) + '</p>' : '');
+          '<div class="acc-status"><span class="acc-dot"></span>Signed in as <b>' + escapeHtml(session.email || 'your account') + '</b> — crews sync automatically.</div>' +
+          '<div class="rm-join"><button class="af-cancel" id="acc-pull" style="flex:1">Refresh from cloud</button><button class="af-cancel" id="acc-logout" style="flex:1">Log out</button></div>' + note;
         $('#acc-logout').addEventListener('click', logout);
         $('#acc-pull').addEventListener('click', async () => {
-          try { const r = await api('/api/data'); if (restore(r.data)) { toast('Pulled your latest crews.'); location.reload(); } else toast('Nothing newer in the cloud yet.'); }
+          try { const d = await pull(); if (restore(d)) { toast('Pulled your latest crews.'); location.reload(); } else toast('Nothing newer in the cloud yet.'); }
           catch (e) { renderBody(e.message, true); }
         });
       } else {
         body.innerHTML =
-          '<label class="rm-field"><span>Email</span><input type="email" id="acc-email" autocomplete="username" placeholder="you@example.com" /></label>' +
-          '<label class="rm-field"><span>Passphrase (8+ characters)</span><input type="password" id="acc-pass" autocomplete="current-password" placeholder="a passphrase only you know" /></label>' +
-          '<div class="rm-join"><button class="af-submit" id="acc-signup" style="flex:1">Create account</button><button class="af-cancel" id="acc-login" style="flex:1">Log in</button></div>' +
-          '<p class="rm-note' + (err ? ' err' : '') + '">' + escapeHtml(msg || '') + '</p>';
-        $('#acc-signup').addEventListener('click', () => submit('signup'));
-        $('#acc-login').addEventListener('click', () => submit('login'));
-        $('#acc-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') submit('login'); });
+          '<p class="sub" style="margin:0 0 14px">Sign in with a one-time magic link — no password. Your crews, ledgers and lists then sync across every device.</p>' +
+          '<label class="rm-field"><span>Email</span><input type="email" id="acc-email" autocomplete="email" placeholder="you@example.com" /></label>' +
+          '<button class="af-submit" id="acc-link" style="width:100%">Email me a magic link →</button>' + note;
+        $('#acc-link').addEventListener('click', sendLink);
+        $('#acc-email').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendLink(); });
       }
     }
-
-    async function submit(kind) {
-      const email = ($('#acc-email').value || '').trim(), pass = $('#acc-pass').value || '';
+    async function sendLink() {
+      const email = ($('#acc-email').value || '').trim();
+      if (!/.+@.+\..+/.test(email)) return renderBody('Enter a valid email address.', true);
       try {
-        const r = await api('/api/' + kind, 'POST', { email, pass });
-        session = { token: r.token, email: r.email }; store.set(SESSION_KEY, session); renderBtn();
-        if (restore(r.data)) { toast('Signed in — pulling your crews.'); location.reload(); return; }
-        push();                                                  // server empty → seed from this device
-        renderBody('All set — this device is now syncing.');
-        toast('Signed in — your crews now sync.');
-      } catch (e) { renderBody(e.message || 'Something went wrong.', true); }
+        await sbAuth('otp?redirect_to=' + encodeURIComponent(location.origin + location.pathname), { email, create_user: true });
+        renderBody('Check your inbox — a one-time sign-in link is on its way to ' + email + '. Open it on this device.');
+      } catch (e) { renderBody(e.message || 'Could not send the link.', true); }
     }
     async function logout() {
-      try { await api('/api/logout', 'POST'); } catch (e) {}
+      try { await fetch(SB_URL + '/auth/v1/logout', { method: 'POST', headers: { apikey: SB_KEY, Authorization: 'Bearer ' + session.access_token } }); } catch (e) {}
       session = null; store.del(SESSION_KEY); renderBtn(); renderBody('Signed out — local-only on this device.'); toast('Signed out.');
     }
 
-    function open() { renderBody(); modal.classList.add('show'); setTimeout(() => { const el = $('#acc-email') || $('#acc-pull'); if (el) el.focus(); }, 40); }
-    const close = () => modal.classList.remove('show');
+    /* ---- returning from a magic link: adopt the tokens, then sync ---- */
+    (function onRedirect() {
+      if (!enabled) return;
+      const t = parseAuthHash(location.hash);
+      if (!t) return;
+      session = sessionFrom(t); store.set(SESSION_KEY, session);
+      history.replaceState(null, '', location.pathname + location.search);
+      pull().then((d) => {
+        if (restore(d)) { toast('Signed in — pulling your crews.'); location.reload(); }
+        else { push(); toast('Signed in — your crews now sync.'); }
+      }).catch(() => {});
+    })();
 
+    function open() { renderBody(); if (modal) modal.classList.add('show'); setTimeout(() => { const el = $('#acc-email') || $('#acc-pull'); if (el) el.focus(); }, 40); }
+    const close = () => modal && modal.classList.remove('show');
     if (btn) btn.addEventListener('click', open);
     if ($('#account-close')) $('#account-close').addEventListener('click', close);
     if (modal) modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
-    accountPush = push;                                          // saves now push to the cloud when signed in
+    accountPush = push;
     renderBtn();
     return { push, open };
   })();
