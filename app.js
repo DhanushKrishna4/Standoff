@@ -444,6 +444,10 @@
         ${custom ? `<button class="pi-del" data-del="${c.id}" aria-label="Delete ${escapeHtml(c.title)}">✕</button>` : ''}
       </div>`;
     }).join('');
+    // Capture search-box focus/caret BEFORE we replace the DOM — afterwards the
+    // old input is gone and document.activeElement has fallen back to <body>.
+    const searchWasFocused = document.activeElement && document.activeElement.id === 'pool-search';
+    const caret = searchWasFocused ? document.activeElement.selectionStart : null;
     poolBody.innerHTML = `
       ${watchControlHtml()}
       <div class="pool-toolbar">
@@ -453,7 +457,7 @@
       </div>
       ${addFormOpen ? addFormHtml() : ''}
       <div class="pool-grid">${items || '<p class="empty-note">No titles match that filter.</p>'}</div>`;
-    if (document.activeElement && document.activeElement.id === 'pool-search') { const el = $('#pool-search'); el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+    if (searchWasFocused) { const el = $('#pool-search'); el.focus(); const pos = caret == null ? el.value.length : caret; el.setSelectionRange(pos, pos); }
   }
 
   function watchControlHtml() {

@@ -321,9 +321,9 @@ input[type="range"]::-moz-range-thumb { width: 13px; height: 13px; border-radius
 .pool-item.off { opacity: 0.4; }
 .pool-item.off .pi-title { text-decoration: line-through; }
 .pi-swatch { width: 28px; height: 40px; border-radius: 6px; flex: none; box-shadow: 0 4px 10px -6px rgba(0,0,0,0.8); }
-.pi-body { min-width: 0; flex: 1; }
-.pi-title { font-size: 13.5px; font-weight: 500; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pi-meta { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-3); }
+.pi-body { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
+.pi-title { display: block; max-width: 100%; font-size: 13.5px; font-weight: 500; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pi-meta { display: block; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-3); }
 .pi-seen { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.5px; text-transform: uppercase; color: var(--ink-3); border: 1px solid var(--line-2); border-radius: 7px; padding: 3px 7px; cursor: pointer; background: none; }
 .pool-item.seen .pi-seen { color: var(--gold-2); border-color: var(--gold); background: var(--gold-soft); }
 .pi-del { flex: none; font-size: 13px; color: var(--ink-3); background: none; border: none; cursor: pointer; padding: 4px 7px; border-radius: 7px; transition: all 0.15s; }
