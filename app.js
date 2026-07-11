@@ -34,6 +34,14 @@
   const uid = () => 'p' + Math.random().toString(36).slice(2, 8);
   const PRIMARY_AXES = new Set(['brain', 'intensity', 'levity', 'novelty']); // shown by default; the rest fold into "finer tone"
   const CONV_LABEL = { easy: "I'm easy", normal: 'Normal', care: 'I care a lot' };
+  // One-tap "tonight's vibe" presets (item 17) — set the mood axes in a single tap.
+  const MOOD_PRESETS = [
+    { key: 'cozy',     label: 'Brain-off & cozy', mood: { brain: 0.15, intensity: 0.2, levity: 0.7, pace: 0.3, darkness: 0.2 } },
+    { key: 'edge',     label: 'Edge-of-seat',     mood: { brain: 0.5, intensity: 0.9, levity: 0.3, pace: 0.85, darkness: 0.6 } },
+    { key: 'feelgood', label: 'Feel-good',        mood: { brain: 0.35, intensity: 0.3, levity: 0.9, darkness: 0.15, novelty: 0.3 } },
+    { key: 'smart',    label: 'Something smart',  mood: { brain: 0.9, intensity: 0.55, levity: 0.35, dialogue: 0.8 } },
+  ];
+  const DEFAULT_MOOD = () => ({ brain: 0.5, intensity: 0.5, levity: 0.5 });
 
   /* ---- a clean start: blank seats, no pre-baked opinions ---------------- */
   const blankPerson = () => ({ id: uid(), name: '', genres: {}, mood: { brain: 0.5, intensity: 0.5, levity: 0.5 }, runtimeCap: NO_LIMIT, conviction: 'normal' });
@@ -45,7 +53,7 @@
   ];
 
   /* ---- state ------------------------------------------------------------ */
-  const state = { crews: [], crewId: null, crew: null, pool: { disabled: [], custom: [] }, memory: { cumulative: {}, debt: {}, history: [], seen: [], nights: 0 }, result: null, exclude: new Set(), locked: false, mode: 'solo', room: null, me: null, group: { rating: null, schoolNight: false, warnings: [] } };
+  const state = { crews: [], crewId: null, crew: null, pool: { disabled: [], custom: [] }, memory: { cumulative: {}, debt: {}, history: [], seen: [], nights: 0 }, result: null, exclude: new Set(), locked: false, mode: 'solo', room: null, me: null, group: { rating: null, schoolNight: false, warnings: [] }, shortlist: { on: false, ids: [] } };
 
   /* ---- unique, non-empty names (engine keys on names) ------------------- */
   function crewNames() {
@@ -106,6 +114,28 @@
     persistCrews();
     if (c && !c.ephemeral) store.set(ACTIVE_KEY, state.crewId);
     accountPush();
+  }
+
+  /* ---- "tonight" vs "stable" taste (item 18) ---------------------------------
+   * Genre stances + conviction are stable (persist across sessions). Mood &
+   * runtime are "tonight's" — they reset to neutral on a fresh page load, with a
+   * one-tap "restore last night's mood" that replays the mood used the last time
+   * this crew locked something in. */
+  const LASTMOOD_KEY = (id) => 'standoff:lastmood:v1:' + id;
+  const isDefaultMood = (m) => ['brain', 'intensity', 'levity'].every((k) => Math.abs((m?.[k] ?? 0.5) - 0.5) < 1e-9)
+    && !['pace', 'darkness', 'dialogue', 'novelty'].some((k) => typeof m?.[k] === 'number');
+  function snapshotMood() {                                   // remember tonight's mood as "last night"
+    if (!state.crewId) return;
+    store.set(LASTMOOD_KEY(state.crewId), (state.crew || []).map((p) => ({ id: p.id, mood: { ...p.mood }, runtimeCap: p.runtimeCap })));
+  }
+  const resetSessionMood = (arr) => (arr || []).forEach((p) => { p.mood = DEFAULT_MOOD(); p.runtimeCap = NO_LIMIT; });
+  const hasLastMood = () => !!store.get(LASTMOOD_KEY(state.crewId));
+  const sessionFresh = () => (state.crew || []).every((p) => isDefaultMood(p.mood) && p.runtimeCap >= NO_LIMIT);
+  function restoreMood() {
+    const snap = store.get(LASTMOOD_KEY(state.crewId)); if (!snap) return;
+    const byId = {}; snap.forEach((s) => { byId[s.id] = s; });
+    state.crew.forEach((p, i) => { const s = byId[p.id] || snap[i]; if (s) { p.mood = { ...s.mood }; if (typeof s.runtimeCap === 'number') p.runtimeCap = s.runtimeCap; } });
+    saveCrew(); renderCrew(); renderSessionNote(); toast('Restored last night’s mood.');
   }
 
   /* ---- first-class crews: save, name, switch ---------------------------- */
@@ -180,6 +210,14 @@
     if (!w || !w.services || !w.services.length) return base;
     const only = base.filter(watchable);
     return only.length >= 4 ? only : base;     // never strand the crew with too few options
+  };
+  // The menu the engine actually resolves over. In "rate just these" mode (item 16)
+  // it's the hand-picked shortlist; otherwise the full active catalog.
+  const shortlistActive = () => state.shortlist.on && state.shortlist.ids.length >= 2;
+  const resolveMenu = () => {
+    if (!shortlistActive()) return activeCatalog();
+    const lib = fullLibrary();
+    return state.shortlist.ids.map((id) => lib.find((c) => c.id === id)).filter(Boolean);
   };
 
   /* ---- helpers ---------------------------------------------------------- */
@@ -260,6 +298,7 @@
       ? `<button class="add-person" id="add-person" aria-label="Add a person"><span><span class="plus" aria-hidden="true">＋</span>Add someone<br><small>up to ${MAX_PEOPLE}</small></span></button>`
       : '';
     crewEl.innerHTML = cards + addBtn;
+    renderSessionNote();
     resolveBtn.disabled = state.crew.length < MIN_PEOPLE;
   }
 
@@ -290,7 +329,9 @@
           ${canRemove ? `<button class="remove-person" data-pid="${p.id}" title="Remove" aria-label="Remove ${escapeHtml(p.name || 'person')}">×</button>` : ''}
         </div>
         <div><div class="field-label">Genres <label class="import-link" title="Import a Letterboxd or IMDb ratings CSV to set genres automatically">↥ Import ratings<input type="file" accept=".csv,text/csv" data-import="${p.id}" hidden /></label></div><div class="genres">${chips}</div></div>
-        <div><div class="field-label">Tonight's mood</div><div class="moods">${primaryMoods}</div>
+        <div><div class="field-label">Tonight's mood <span class="fl-hint">— tap a vibe or fine-tune</span></div>
+          <div class="mood-presets">${MOOD_PRESETS.map((pr) => `<button type="button" class="preset-chip" data-pid="${p.id}" data-preset="${pr.key}">${pr.label}</button>`).join('')}</div>
+          <div class="moods">${primaryMoods}</div>
           ${extraMoods ? `<details class="mood-more"><summary>Finer tone — pace, darkness, dialogue</summary><div class="moods">${extraMoods}</div></details>` : ''}
         </div>
         <div>
@@ -388,6 +429,13 @@
       }
       return;
     }
+    const pc = e.target.closest('.preset-chip');
+    if (pc) {
+      const p = findPerson(pc.dataset.pid) || (state.me && state.me.id === pc.dataset.pid ? state.me : null);
+      const pr = MOOD_PRESETS.find((x) => x.key === pc.dataset.preset);
+      if (p && pr) { p.mood = { ...pr.mood }; persist(); renderCrew(); toast(`Set ${p.name ? p.name + '’s' : 'the'} vibe: ${pr.label.toLowerCase()}.`); }
+      return;
+    }
     const rm = e.target.closest('.remove-person');
     if (rm) { state.crew = state.crew.filter((p) => p.id !== rm.dataset.pid); saveCrew(); loadMemory(); renderCrew(); renderLedger(); if (poolOpen) renderPool(); return; }
     if (e.target.closest('#add-person')) {
@@ -428,6 +476,16 @@
    * "Kids are here" caps the content rating, "school night" hard-caps runtime,
    * and the no-… chips turn a content warning into a group veto. These feed
    * straight into the engine's feasibility stage as sacred constraints.       */
+  const sessionNoteEl = $('#session-note');
+  function renderSessionNote() {
+    if (!sessionNoteEl) return;
+    const show = state.mode !== 'room' && hasLastMood() && sessionFresh();
+    sessionNoteEl.innerHTML = show
+      ? `<div class="sn-row"><span class="sn-text">Mood &amp; runtime are fresh for tonight — your genres stayed put.</span><button class="sn-restore" id="restore-mood">↻ Restore last night’s mood</button></div>`
+      : '';
+  }
+  if (sessionNoteEl) sessionNoteEl.addEventListener('click', (e) => { if (e.target.closest('#restore-mood')) restoreMood(); });
+
   const groupControlsEl = $('#group-controls');
   const WARN_LABEL = { violence: 'Violence', gore: 'Gore', scary: 'Scares', disturbing: 'Disturbing', sexual: 'Sex', language: 'Language' };
   const availableWarnings = () => { const s = new Set(); (window.CATALOG || []).forEach((c) => (c.warnings || []).forEach((w) => s.add(w))); return [...s].sort(); };
@@ -457,6 +515,52 @@
     renderGroupControls();
     if (poolOpen) renderPool();
   });
+
+  /* ---- "rate just these" quick tiebreak (item 16) ------------------------ */
+  const quickModeEl = $('#quickmode');
+  let qmQuery = '';
+  function renderQuickMode() {
+    if (!quickModeEl) return;
+    if (state.mode === 'room') { quickModeEl.innerHTML = ''; return; }   // solo-only
+    const s = state.shortlist;
+    if (!s.on) { quickModeEl.innerHTML = `<button class="qm-toggle" id="qm-toggle">🎯 Already have a few in mind? Rate just those →</button>`; return; }
+    const lib = fullLibrary();
+    const chosen = s.ids.map((id) => lib.find((c) => c.id === id)).filter(Boolean);
+    const chips = chosen.map((c) => `<span class="qm-chip">${escapeHtml(c.title)}<button class="qm-chip-x" data-qm-remove="${c.id}" aria-label="Remove ${escapeHtml(c.title)}">×</button></span>`).join('');
+    const q = qmQuery.trim().toLowerCase();
+    let results = '';
+    if (q && s.ids.length < 6) {
+      const matches = lib.filter((c) => !s.ids.includes(c.id) && c.title.toLowerCase().includes(q)).slice(0, 6);
+      results = matches.length
+        ? matches.map((c) => `<button class="qm-result" data-qm-add="${c.id}">${escapeHtml(c.title)} <span class="qm-r-meta">${escapeHtml(String(c.year || ''))}</span></button>`).join('')
+        : `<div class="qm-noresult">No title matches “${escapeHtml(qmQuery)}”.</div>`;
+    }
+    const wasFocused = document.activeElement && document.activeElement.id === 'qm-search';
+    const caret = wasFocused ? document.activeElement.selectionStart : null;
+    quickModeEl.innerHTML = `
+      <div class="qm-panel">
+        <div class="qm-head"><span class="qm-title">Rate just these${s.ids.length ? ' · ' + s.ids.length : ''}</span><button class="qm-off" id="qm-off">↩ Use the full catalog</button></div>
+        <div class="qm-hint">Add 2–6 titles you're torn between — the engine runs the exact same fair tiebreak on just those.</div>
+        ${chips ? `<div class="qm-chips">${chips}</div>` : ''}
+        <div class="qm-search-wrap">
+          <input type="search" id="qm-search" class="qm-search" placeholder="${s.ids.length >= 6 ? 'That’s six — plenty to settle' : 'Search a title to add…'}" value="${escapeHtml(qmQuery)}" aria-label="Search a title to add" ${s.ids.length >= 6 ? 'disabled' : ''} />
+          ${results ? `<div class="qm-results">${results}</div>` : ''}
+        </div>
+        <div class="${s.ids.length >= 2 ? 'qm-ready' : 'qm-need'}">${s.ids.length >= 2 ? '✓ Ready — hit Settle to break the tie fairly.' : `Add ${2 - s.ids.length} more to settle.`}</div>
+      </div>`;
+    if (wasFocused) { const el = $('#qm-search'); if (el) { el.focus(); const p = caret == null ? el.value.length : caret; el.setSelectionRange(p, p); } }
+  }
+  if (quickModeEl) {
+    quickModeEl.addEventListener('click', (e) => {
+      if (e.target.closest('#qm-toggle')) { state.shortlist.on = true; qmQuery = ''; renderQuickMode(); $('#qm-search')?.focus(); return; }
+      if (e.target.closest('#qm-off')) { state.shortlist.on = false; renderQuickMode(); return; }
+      const add = e.target.closest('[data-qm-add]');
+      if (add) { const id = add.dataset.qmAdd; if (state.shortlist.ids.length < 6 && !state.shortlist.ids.includes(id)) state.shortlist.ids.push(id); qmQuery = ''; renderQuickMode(); $('#qm-search')?.focus(); return; }
+      const rm = e.target.closest('[data-qm-remove]');
+      if (rm) { state.shortlist.ids = state.shortlist.ids.filter((id) => id !== rm.dataset.qmRemove); renderQuickMode(); return; }
+    });
+    quickModeEl.addEventListener('input', (e) => { if (e.target.id === 'qm-search') { qmQuery = e.target.value; renderQuickMode(); } });
+  }
 
   // crew switcher (tabs)
   $('#crew-tabs').addEventListener('click', (e) => {
@@ -601,8 +705,10 @@
 
   function runResolve(withReveal) {
     loadMemory();
+    if (resolveMenu().length === 0) { state.result = { empty: true, reason: '', filteredOut: [], _menuEmpty: true }; renderStage(); stageEl.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+    maybeNudgeNeutral();
     let result;
-    try { result = E.resolve(engineCrew(), activeCatalog(), { exclude: [...state.exclude], constraints: engineConstraints() }, state.memory); }
+    try { result = E.resolve(engineCrew(), resolveMenu(), { exclude: [...state.exclude], constraints: engineConstraints() }, state.memory); }
     catch (err) { toast(err.message || 'Something went wrong.'); return; }
     state.result = result; state.locked = false;
     if (!withReveal || result.empty || reduceMotion) { renderStage(); if (!reduceMotion) stageEl.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
@@ -617,7 +723,7 @@
     const letters = target.replace(/ /g, '').length || 1;
     const stagger = Math.min(60, Math.round(1000 / letters));
     label.textContent = 'Tallying the room…';
-    sub.textContent = `Merging ${state.crew.length} tastes across ${activeCatalog().length} options · tap to skip`;
+    sub.textContent = `Merging ${state.crew.length} tastes across ${resolveMenu().length} options · tap to skip`;
     board.innerHTML = ''; overlay.classList.add('show'); overlay.setAttribute('aria-hidden', 'false');
     const cells = [], timers = []; let remaining = 0, li = 0, finished = false;
     [...target].forEach((ch) => {
@@ -640,12 +746,55 @@
   /* =========================================================================
    * The verdict (clean core + progressive-disclosure reasoning)
    * ====================================================================== */
+  // Gentle nudge when nobody has expressed any taste (item 24) — non-blocking.
+  function maybeNudgeNeutral() {
+    if (state.mode === 'room' || shortlistActive()) return;
+    const anyTaste = (state.crew || []).some((p) => Object.keys(p.genres || {}).length || !isDefaultMood(p.mood));
+    if (!anyTaste) toast('Nobody’s weighed in yet — I’ll pick a safe crowd-pleaser. Tap genres or a vibe for a sharper call.');
+  }
+
+  // Themed, contextual empty/error states (item 24) — cinema language, real actions.
+  function emptyStateHtml(r) {
+    const fo = (r && r.filteredOut) || [];
+    const has = (t) => fo.some((f) => f.reasons.some((x) => x.type === t));
+    const menuEmpty = (r && r._menuEmpty) || resolveMenu().length === 0;
+    let icon = '🚫', title = 'Total deadlock.', body = (r && r.reason) || 'No option survives tonight’s constraints.', primary = '';
+    if (menuEmpty) { icon = '🎞️'; title = 'The shortlist is empty.'; body = 'Every title is set aside or filtered out. Add some back in the shortlist, or clear your streaming filter.'; primary = `<button class="es-action" data-es="pool">Open the shortlist</button>`; }
+    else if (has('veto') && !has('seen')) { icon = '✋'; title = 'The vetoes leave nothing.'; body = 'Between everyone’s hard no’s, no title survives. Soften a veto to a dislike and it’s back in play.'; primary = `<button class="es-action" data-es="crew">Review the vetoes</button>`; }
+    else if (has('rating') || has('warning')) { icon = '🧸'; title = 'Nothing clears the guardrails.'; body = 'The content-rating cap or a content-warning filter ruled everything out. Loosen the room settings to open the menu.'; primary = `<button class="es-action" data-es="group">Adjust room settings</button>`; }
+    else if (has('seen')) { icon = '🍿'; title = 'You’ve seen it all.'; body = 'Everything left is already marked seen together. Unmark one you’d happily rewatch.'; primary = `<button class="es-action" data-es="pool">Open the shortlist</button>`; }
+    return `<div class="verdict empty-verdict"><div class="empty-state">
+      <div class="es-slate" aria-hidden="true"><span class="es-clap"><i></i><i></i><i></i><i></i><i></i></span><span class="es-icon">${icon}</span></div>
+      <h3>${escapeHtml(title)}</h3><p>${escapeHtml(body)}</p>
+      <div class="es-actions">${primary}<button class="es-action ghost" data-es="tastes">Clear tastes</button></div>
+    </div></div>`;
+  }
+  function handleEmptyAction(kind) {
+    if (kind === 'pool') { if (!poolOpen) $('#pool-head')?.click(); $('#pool-sect')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    else if (kind === 'crew') $('#room')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    else if (kind === 'group') $('#group-controls')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    else if (kind === 'tastes') clearTastes();
+  }
+
+  // Connectivity awareness (item 24) — solo works fully offline; rooms don't.
+  function initNet() {
+    let banner = null;
+    const show = (html) => { if (!banner) { banner = document.createElement('div'); banner.className = 'net-banner'; document.body.appendChild(banner); } banner.innerHTML = html; requestAnimationFrame(() => banner.classList.add('show')); };
+    const hide = () => banner && banner.classList.remove('show');
+    const update = () => { if (navigator.onLine) hide(); else show(`<span class="nb-dot" aria-hidden="true"></span>You’re offline — Standoff runs on your device, so solo still works. Live rooms need a connection.`); };
+    addEventListener('online', () => { update(); toast('Back online.'); });
+    addEventListener('offline', update);
+    update();
+  }
+
   function renderStage() {
     const r = state.result;
     if (!r) return;
     if (r.empty) {
-      stageEl.innerHTML = `<div class="verdict"><div class="empty-state"><div class="big" aria-hidden="true">🚫</div><h3>Total deadlock.</h3><p>${escapeHtml(r.reason)}</p></div></div>`;
-      stageEl.classList.add('show'); return;
+      stageEl.innerHTML = emptyStateHtml(r);
+      stageEl.classList.add('show');
+      stageEl.querySelectorAll('.es-action').forEach((b) => b.addEventListener('click', () => handleEmptyAction(b.dataset.es)));
+      return;
     }
     const x = r.explanation, pick = r.pick;
     const colors = (r.pickRow ? r.pickRow.perPerson : r.ranking[0].perPerson).map((_, i) => PERSON_COLOR(i));
@@ -686,8 +835,11 @@
 
       <div class="result-actions">${hostControls}
         <button class="reroll-btn" id="copy-verdict-btn">Copy verdict</button>
+        <button class="reroll-btn" id="card-btn">📸 Save as card</button>
         ${guestNote}${excludeNote}
       </div>
+
+      ${handoffHtml(pick)}
 
       <details class="reasoning">
         <summary>The reasoning — eleven methods, how solid it is &amp; the full ranking</summary>
@@ -712,8 +864,97 @@
       if (navigator.clipboard) navigator.clipboard.writeText(text).then(() => toast('Verdict copied to your clipboard.')).catch(() => window.prompt('Copy the verdict:', text));
       else window.prompt('Copy the verdict:', text);
     });
+    $('#card-btn')?.addEventListener('click', () => renderVerdictCard(r));
+    injectQR(pick);
 
     setTimeout(() => injectSolidity(r), 30);
+  }
+
+  /* ---- watch-party handoff (item 21) ------------------------------------ */
+  const region = () => ((state.watch && state.watch.region) || 'US').toLowerCase();
+  const justWatchUrl = (pick) => `https://www.justwatch.com/${region()}/search?q=${encodeURIComponent(pick.title)}`;
+  function handoffHtml(pick) {
+    const providers = (pick.providers && (pick.providers[(state.watch && state.watch.region) || 'US'] || [])) || [];
+    const provNote = providers.length ? `<div class="ho-prov">On ${escapeHtml(providers.slice(0, 3).join(', '))}${providers.length > 3 ? ' & more' : ''}</div>` : '';
+    return `<div class="handoff">
+      <div class="ho-col">
+        <div class="ho-h">Where to watch</div>
+        <a class="ho-btn" href="${justWatchUrl(pick)}" target="_blank" rel="noopener">🔍 Find it &amp; open the app</a>
+        ${provNote}
+      </div>
+      <div class="ho-col">
+        <div class="ho-h">Watch together, apart</div>
+        <a class="ho-btn" href="https://www.teleparty.com/" target="_blank" rel="noopener">🎉 Teleparty</a>
+        <a class="ho-btn" href="https://scener.com/" target="_blank" rel="noopener">🎬 Scener</a>
+      </div>
+      <div class="ho-col ho-qrcol">
+        <div class="ho-h">Grab it on your phone</div>
+        <div class="ho-qr" id="ho-qr" title="Scan to open where-to-watch"></div>
+      </div>
+    </div>`;
+  }
+  function injectQR(pick) {
+    const holder = document.querySelector('#ho-qr');
+    if (!holder || typeof QR === 'undefined') return;
+    try { holder.innerHTML = QR.svg(justWatchUrl(pick), { ecl: 'M', scale: 4, quiet: 2, dark: '#0d0b08', light: '#f6efe2' }); }
+    catch (e) { holder.remove(); }
+  }
+
+  /* ---- verdict as a shareable image (item 22) — ticket-stub on canvas ---- */
+  const roundRectPath = (ctx, x, y, w, h, r) => { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); };
+  const slugTitle = (t) => String(t).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+  async function renderVerdictCard(r) {
+    const pick = r.pick, x = r.explanation;
+    const W = 1200, H = 630, S = 2;
+    const canvas = document.createElement('canvas'); canvas.width = W * S; canvas.height = H * S;
+    const ctx = canvas.getContext('2d'); ctx.scale(S, S);
+    try { if (document.fonts && document.fonts.ready) await document.fonts.ready; } catch (e) {}
+    // background + ticket border
+    const g = ctx.createLinearGradient(0, 0, W, H); g.addColorStop(0, '#191007'); g.addColorStop(1, '#0d0b08');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = 'rgba(243,178,62,0.55)'; ctx.lineWidth = 2; roundRectPath(ctx, 22, 22, W - 44, H - 44, 20); ctx.stroke();
+    // clapper stripe (top inside the border)
+    for (let i = 0; i < 22; i++) { ctx.fillStyle = i % 2 === 0 ? '#f3b23e' : '#0d0b08'; ctx.fillRect(24 + i * ((W - 48) / 22), 24, (W - 48) / 22 + 1, 16); }
+    // perforations down the right third (ticket stub)
+    const stubX = W - 300; ctx.strokeStyle = 'rgba(255,240,220,0.14)'; ctx.setLineDash([6, 8]); ctx.beginPath(); ctx.moveTo(stubX, 60); ctx.lineTo(stubX, H - 44); ctx.stroke(); ctx.setLineDash([]);
+    // kicker
+    ctx.fillStyle = '#f3b23e'; ctx.font = "600 20px 'JetBrains Mono', monospace"; ctx.fillText('TONIGHT’S PICK', 60, 118);
+    // title (wrap up to 2 lines)
+    ctx.fillStyle = '#f6efe2'; ctx.font = "600 60px 'Fraunces', Georgia, serif";
+    const words = String(pick.title).split(' '); let line = '', yy = 190; const maxW = stubX - 100; let lines = 0;
+    for (let i = 0; i < words.length; i++) { const test = line ? line + ' ' + words[i] : words[i]; if (ctx.measureText(test).width > maxW && line && lines < 1) { ctx.fillText(line, 60, yy); yy += 64; lines++; line = words[i]; } else line = test; }
+    ctx.fillText(line, 60, yy);
+    // meta
+    ctx.fillStyle = '#a99885'; ctx.font = "500 22px 'Inter', system-ui, sans-serif";
+    ctx.fillText(`${pick.kind} · ${pick.year || ''} · ${runtimeStr(pick)} · ${(pick.genres || []).join(' / ')}`, 60, yy + 44);
+    // hook
+    if (pick.hook) { ctx.fillStyle = '#ffd88a'; ctx.font = "italic 26px 'Fraunces', Georgia, serif"; ctx.fillText('“' + String(pick.hook).slice(0, 52) + (pick.hook.length > 52 ? '…' : '') + '”', 60, yy + 96); }
+    // satisfaction bars
+    let by = yy + 150; ctx.font = "500 18px 'Inter', system-ui, sans-serif";
+    (x.perPerson || []).slice(0, 4).forEach((pp) => {
+      ctx.fillStyle = '#c9bfb0'; ctx.fillText(pp.name, 60, by + 14);
+      const bx = 200, bw = stubX - 260; ctx.fillStyle = 'rgba(255,240,220,0.1)'; roundRectPath(ctx, bx, by, bw, 12, 6); ctx.fill();
+      ctx.fillStyle = '#f3b23e'; roundRectPath(ctx, bx, by, Math.max(10, bw * Math.max(0.05, pp.util)), 12, 6); ctx.fill();
+      by += 30;
+    });
+    // stub: confidence + QR
+    ctx.fillStyle = '#776d5f'; ctx.font = "600 15px 'JetBrains Mono', monospace"; ctx.fillText('VERDICT', stubX + 42, 118);
+    ctx.fillStyle = '#f6efe2'; ctx.font = "600 26px 'Fraunces', Georgia, serif"; ctx.fillText(x.confidence || 'Settled', stubX + 42, 152);
+    try {
+      const svg = QR.svg(justWatchUrl(pick), { ecl: 'M', scale: 4, quiet: 1, dark: '#0d0b08', light: '#f6efe2' });
+      const img = new Image(); await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = 'data:image/svg+xml;base64,' + btoa(svg); });
+      const qs = 180; ctx.fillStyle = '#f6efe2'; roundRectPath(ctx, stubX + 42, 190, qs, qs, 10); ctx.fill(); ctx.drawImage(img, stubX + 50, 198, qs - 16, qs - 16);
+      ctx.fillStyle = '#776d5f'; ctx.font = "500 13px 'Inter', sans-serif"; ctx.fillText('scan for where to watch', stubX + 42, 190 + qs + 22);
+    } catch (e) {}
+    // footer
+    ctx.fillStyle = '#776d5f'; ctx.font = "500 18px 'Inter', system-ui, sans-serif";
+    ctx.fillText('Settled fairly with Standoff · standoff-liyl.onrender.com', 60, H - 48);
+    canvas.toBlob((blob) => {
+      if (!blob) { toast('Could not render the card.'); return; }
+      const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `standoff-${slugTitle(pick.title)}.png`; document.body.appendChild(a); a.click();
+      setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+      toast('Verdict card saved to your downloads.');
+    }, 'image/png');
   }
 
   function injectSolidity(r) {
@@ -722,9 +963,9 @@
     // In a live room the client never sees others' tastes, so the server ships the
     // analysis; solo mode computes it locally.
     let a = state.mode === 'room' ? (r.analysis || null) : null;
-    if (!a) { try { a = E.analyzeVerdict(engineCrew(), activeCatalog(), state.memory, r); } catch (e) { document.querySelector('#solidity')?.remove(); return; } }
+    if (!a) { try { a = E.analyzeVerdict(engineCrew(), resolveMenu(), state.memory, r); } catch (e) { document.querySelector('#solidity')?.remove(); return; } }
     if (!a) { document.querySelector('#solidity')?.remove(); return; }
-    const cat = activeCatalog(), titleOf = (id) => (cat.find((c) => c.id === id) || {}).title || 'another option';
+    const cat = fullLibrary(), titleOf = (id) => (cat.find((c) => c.id === id) || {}).title || 'another option';
     const N = (r.pickRow ? r.pickRow.perPerson.length : r.ranking[0].perPerson.length), rob = a.robustness, strat = a.strategy;
 
     let robLine;
@@ -797,7 +1038,7 @@
     if (!person) return;
     if (to === 'neutral') delete person.genres[genre]; else person.genres[genre] = to;
     let res;
-    try { res = E.resolve(crew, activeCatalog(), {}, state.memory); } catch (e) { return; }
+    try { res = E.resolve(crew, resolveMenu(), {}, state.memory); } catch (e) { return; }
     if (res.empty) { out.innerHTML = `<div class="wi-card">That change empties the menu.</div>`; return; }
     const alt = res.pick;
     const lh = [...res.explanation.perPerson].sort((a, b) => a.util - b.util)[0];
@@ -878,7 +1119,7 @@
     if (!r || !r.pick || state.locked) return;
     loadMemory();
     state.memory = E.commit(state.memory, r.pick, r._committable.normForPick);
-    saveMemory(); state.locked = true;
+    saveMemory(); snapshotMood(); state.locked = true;
     const btn = $('#lock-btn'); btn.textContent = 'Locked in ✓'; btn.disabled = true;
     const rr = $('#reroll-btn'); if (rr) rr.style.display = 'none';
     const sb = $('#seen-btn'); if (sb) sb.style.display = 'none';
@@ -931,7 +1172,13 @@
   let ledgerOpen = false;
   function toggleLedger(force) { ledgerOpen = force != null ? force : !ledgerOpen; ledgerEl.classList.toggle('open', ledgerOpen); ledgerBody.hidden = !ledgerOpen; ledgerHead.setAttribute('aria-expanded', String(ledgerOpen)); }
   ledgerHead.addEventListener('click', () => toggleLedger());
-  $('#reset-ledger').addEventListener('click', () => { store.del(memKey(state.crewId)); state.memory = { cumulative: {}, debt: {}, history: [], seen: [], nights: 0 }; renderLedger(); if (poolOpen) renderPool(); toast('Memory wiped for this crew.'); });
+  $('#reset-ledger').addEventListener('click', () => {
+    const before = state.memory;
+    store.del(memKey(state.crewId));
+    state.memory = { cumulative: {}, debt: {}, history: [], seen: [], nights: 0 };
+    renderLedger(); if (poolOpen) renderPool();
+    toastUndo('Memory wiped for this crew.', () => { state.memory = before; saveMemory(); renderLedger(); if (poolOpen) renderPool(); toast('Memory restored.'); });
+  });
 
   function renderLedger() {
     const names = crewNames();
@@ -944,10 +1191,109 @@
     $('#debt-empty').style.display = hasDebt ? 'none' : 'block';
     $('#debt-list').style.display = hasDebt ? 'block' : 'none';
     const hist = state.memory.history || [];
-    $('#history-list').innerHTML = hist.map((h) => { const sats = h.satisfaction.map((s) => `${escapeHtml(s.name)} ${s.util}`).join(' · '); return `<div class="history-item"><span class="h-title">${escapeHtml(h.title)}</span><span class="h-year">${escapeHtml(String(h.year || ''))}</span><span class="h-sats">${sats}</span></div>`; }).join('');
+    $('#history-list').innerHTML = hist.slice(0, 10).map((h) => { const sats = h.satisfaction.map((s) => `${escapeHtml(s.name)} ${s.util}`).join(' · '); return `<div class="history-item"><span class="h-title">${escapeHtml(h.title)}</span><span class="h-year">${escapeHtml(String(h.year || ''))}</span><span class="h-sats">${sats}</span></div>`; }).join('');
     $('#history-empty').style.display = hist.length ? 'none' : 'block';
     $('#history-list').style.display = hist.length ? 'block' : 'none';
+    renderInsights();
   }
+
+  /* ---- history & insights (item 19) ------------------------------------- */
+  function crewInsights() {
+    const hist = state.memory.history || [];
+    if (!hist.length) return null;
+    const names = crewNames();
+    const comp = {}, satSum = {}, satCnt = {};
+    names.forEach((n) => { comp[n] = 0; satSum[n] = 0; satCnt[n] = 0; });
+    hist.forEach((h) => {
+      const sats = h.satisfaction || []; if (!sats.length) return;
+      const min = sats.reduce((a, b) => (b.util < a.util ? b : a));
+      if (comp[min.name] != null) comp[min.name]++;
+      sats.forEach((s) => { if (satSum[s.name] != null) { satSum[s.name] += s.util; satCnt[s.name]++; } });
+    });
+    const lib = fullLibrary();
+    const genreCount = {};
+    hist.forEach((h) => { const c = lib.find((x) => x.id === h.pickId); (c ? c.genres : []).forEach((g) => { genreCount[g] = (genreCount[g] || 0) + 1; }); });
+    const rank = (obj) => Object.entries(obj).sort((a, b) => b[1] - a[1]);
+    const compromiser = rank(comp).filter(([, v]) => v > 0)[0] || null;
+    const avg = names.map((n) => ({ n, a: satCnt[n] ? Math.round(satSum[n] / satCnt[n]) : 0 }));
+    const happiest = avg.slice().sort((a, b) => b.a - a.a)[0];
+    const topGenre = rank(genreCount)[0] || null;
+    return { nights: hist.length, compromiser, happiest, topGenre, avg };
+  }
+  function renderInsights() {
+    const el = $('#insights'); if (!el) return;
+    const ins = crewInsights();
+    if (!ins) { el.innerHTML = ''; return; }
+    const yir = ins.nights >= 8;   // enough history to frame it as a "year in review"
+    const cards = [];
+    if (ins.compromiser) cards.push(`<div class="ins-card"><div class="ins-k">Compromises most</div><div class="ins-v">${escapeHtml(ins.compromiser[0])}</div><div class="ins-sub">took one for the team ${ins.compromiser[1]}×</div></div>`);
+    if (ins.happiest) cards.push(`<div class="ins-card"><div class="ins-k">Happiest on average</div><div class="ins-v">${escapeHtml(ins.happiest.n)}</div><div class="ins-sub">${ins.happiest.a}% mean satisfaction</div></div>`);
+    if (ins.topGenre) cards.push(`<div class="ins-card"><div class="ins-k">Most-watched</div><div class="ins-v">${escapeHtml(ins.topGenre[0])}</div><div class="ins-sub">${ins.topGenre[1]} of ${ins.nights} nights</div></div>`);
+    cards.push(`<div class="ins-card"><div class="ins-k">Nights settled</div><div class="ins-v">${ins.nights}</div><div class="ins-sub">fairly, together</div></div>`);
+    el.innerHTML = `<div class="ins-head"><h4 class="mini-h">${yir ? 'Year in review' : 'Insights'}</h4></div><div class="ins-grid">${cards.join('')}</div>`;
+  }
+
+  function downloadFile(name, text, mime) {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click();
+    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+  }
+  const csvCell = (v) => { const s = String(v == null ? '' : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  function exportLedger(format) {
+    const mem = state.memory, names = crewNames();
+    if (!(mem.history || []).length) { toast('Nothing to export yet — lock in a night first.'); return; }
+    const label = (crewLabel(state.crews.find((c) => c.id === state.crewId) || {}) || 'crew').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    if (format === 'json') {
+      downloadFile(`standoff-${label}.json`, JSON.stringify({ crew: names, nights: mem.nights, debt: mem.debt, cumulative: mem.cumulative, history: mem.history, feedback: mem.feedbackLog || [] }, null, 2), 'application/json');
+    } else {
+      const rows = [['date', 'title', 'year', ...names.map((n) => n + ' (%)')]];
+      (mem.history || []).forEach((h) => { const by = {}; (h.satisfaction || []).forEach((s) => { by[s.name] = s.util; }); rows.push([(h.at || '').slice(0, 10), h.title, h.year || '', ...names.map((n) => by[n] == null ? '' : by[n])]); });
+      downloadFile(`standoff-${label}.csv`, rows.map((r) => r.map(csvCell).join(',')).join('\n'), 'text/csv');
+    }
+    toast(`Exported this crew's ledger as ${format.toUpperCase()}.`);
+  }
+  $('#export-json')?.addEventListener('click', () => exportLedger('json'));
+  $('#export-csv')?.addEventListener('click', () => exportLedger('csv'));
+
+  /* ---- scheduling & reminders — calendar (.ics) export (item 20) --------- */
+  const pad2 = (n) => String(n).padStart(2, '0');
+  function nextOccurrence(weekday, hh, mm) {
+    const now = new Date();
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0, 0);
+    let add = (weekday - d.getDay() + 7) % 7;
+    if (add === 0 && d <= now) add = 7;    // if today's slot has passed, go next week
+    d.setDate(d.getDate() + add);
+    return d;
+  }
+  const fmtLocal = (d) => `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}T${pad2(d.getHours())}${pad2(d.getMinutes())}00`;
+  const fmtUTC = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const icsEscape = (s) => String(s).replace(/([,;\\])/g, '\\$1').replace(/\r?\n/g, '\\n');
+  const icsFold = (line) => { let out = ''; let l = line; while (l.length > 73) { out += l.slice(0, 73) + '\r\n '; l = l.slice(73); } return out + l; };
+  function buildICS() {
+    const weekday = +($('#sch-day').value);
+    const [hh, mm] = ($('#sch-time').value || '20:00').split(':').map(Number);
+    const weekly = $('#sch-weekly').checked;
+    const start = nextOccurrence(weekday, hh || 20, mm || 0);
+    const DAYS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+    const desc = 'Settle what to watch — fairly. Pre-set your taste so the pick is ready when you sit down:\n' + shareLink();
+    const lines = [
+      'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Standoff//Movie Night//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
+      'BEGIN:VEVENT',
+      'UID:' + Date.now() + '-' + Math.random().toString(36).slice(2) + '@standoff',
+      'DTSTAMP:' + fmtUTC(new Date()),
+      'DTSTART:' + fmtLocal(start),
+      'DURATION:PT2H',
+      weekly ? 'RRULE:FREQ=WEEKLY;BYDAY=' + DAYS[weekday] : '',
+      'SUMMARY:🎬 Movie night',
+      'DESCRIPTION:' + icsEscape(desc),
+      'BEGIN:VALARM', 'TRIGGER:-PT2H', 'ACTION:DISPLAY', 'DESCRIPTION:Pre-set your taste for movie night', 'END:VALARM',
+      'END:VEVENT', 'END:VCALENDAR',
+    ].filter(Boolean).map(icsFold);
+    downloadFile('standoff-movie-night.ics', lines.join('\r\n'), 'text/calendar');
+    toast('Movie night added to your calendar — with a taste-setup link inside.');
+  }
+  $('#sch-ics')?.addEventListener('click', buildICS);
 
   /* =========================================================================
    * Modal, toast, share
@@ -975,6 +1321,28 @@
 
   let toastTimer;
   function toast(msg) { const t = $('#toast'); t.innerHTML = `<span class="tick" aria-hidden="true">✓</span>${escapeHtml(msg)}`; t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 3200); }
+  // Undo affordance (item 23): the toast itself carries the undo for ~7s.
+  function toastUndo(msg, undoFn) {
+    const t = $('#toast');
+    t.innerHTML = `<span class="tick" aria-hidden="true">✓</span>${escapeHtml(msg)}<button class="toast-undo" id="toast-undo">Undo</button>`;
+    t.classList.add('show'); clearTimeout(toastTimer);
+    t.querySelector('#toast-undo').addEventListener('click', () => { t.classList.remove('show'); clearTimeout(toastTimer); undoFn(); });
+    toastTimer = setTimeout(() => t.classList.remove('show'), 7000);
+  }
+
+  /* ---- clear this crew's tastes, undoably (item 23) ---------------------- */
+  function clearTastes() {
+    if (state.mode === 'room') { toast('Clear your own taste from the room card.'); return; }
+    const before = JSON.parse(JSON.stringify(state.crew));
+    if (before.every((p) => !Object.keys(p.genres || {}).length && isDefaultMood(p.mood) && p.runtimeCap >= NO_LIMIT && (p.conviction || 'normal') === 'normal')) { toast('Nothing to clear — tastes are already blank.'); return; }
+    state.crew.forEach((p) => { p.genres = {}; p.mood = DEFAULT_MOOD(); p.runtimeCap = NO_LIMIT; p.conviction = 'normal'; });
+    saveCrew(); renderCrew(); if (poolOpen) renderPool(); clearVerdict();
+    toastUndo('Cleared this crew’s tastes — the crew and its ledger stayed.', () => {
+      state.crew.forEach((p, i) => { if (before[i]) { p.genres = before[i].genres; p.mood = before[i].mood; p.runtimeCap = before[i].runtimeCap; p.conviction = before[i].conviction; } });
+      saveCrew(); renderCrew(); if (poolOpen) renderPool(); toast('Tastes restored.');
+    });
+  }
+  $('#clear-tastes')?.addEventListener('click', clearTastes);
 
   /* =========================================================================
    * Motion layer — cursor glow, scroll reveals, progress, settle-button light
@@ -1079,7 +1447,8 @@
     clearVerdict();
     $('#crew-tabs').style.display = 'none';
     closeRoomModal();
-    renderCrew(); updateSettle(); renderLedger();
+    state.shortlist = { on: false, ids: [] };   // quick-tiebreak is solo-only
+    renderCrew(); renderGroupControls(); renderQuickMode(); updateSettle(); renderLedger();
     toast(`In room ${m.code} — share the code to fill the couch.`);
   }
   function leaveRoom(silent) {
@@ -1088,7 +1457,7 @@
     const c = state.crews.find((x) => x.id === state.crewId); state.crew = c ? c.crew : seedCrew();
     clearVerdict(); loadMemory();
     $('#crew-tabs').style.display = '';
-    renderCrewTabs(); renderCrew(); updateSettle(); renderLedger();
+    renderCrewTabs(); renderCrew(); renderGroupControls(); renderQuickMode(); updateSettle(); renderLedger();
     if (!silent) toast('Left the room.');
   }
 
@@ -1344,11 +1713,13 @@
   state.pool = store.get(POOL_KEY) || { disabled: [], custom: [] };
   state.watch = store.get(WATCH_KEY) || { region: '', services: [] };
 
+  let hydratedShare = false;
   if (hydrateFromHash()) {
     // A shared setup arrives as its own new crew, so it never clobbers a saved one.
     const shared = { id: uid(), name: 'Shared crew', crew: state.crew };
     state.crews.push(shared); state.crewId = shared.id; state.crew = shared.crew;
     persistCrews(); store.set(ACTIVE_KEY, shared.id); savePool();
+    hydratedShare = true;
     setTimeout(() => toast('Loaded a shared setup — saved as a new crew.'), 500);
   } else {
     state.crewId = store.get(ACTIVE_KEY);
@@ -1357,11 +1728,16 @@
     persistCrews(); store.set(ACTIVE_KEY, state.crewId);
   }
   loadMemory();
+  // Mood & runtime are "tonight's" — start fresh each session (item 18). A shared
+  // setup keeps its mood, since that's the point of the share.
+  if (!hydratedShare) { resetSessionMood(state.crew); saveCrew(); }
   renderCrewTabs();
   renderCrew();
   renderGroupControls();
+  renderQuickMode();
   renderLedger();
   initMotion();
+  initNet();
   Sound.initToggle();
 
   // An invite link (?room=CODE) opens the join dialog with the code prefilled.

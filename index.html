@@ -106,7 +106,9 @@
       </div>
       <div class="crew-tabs" id="crew-tabs" aria-label="Your crews"></div>
       <div class="crew" id="crew"></div>
+      <div class="session-note" id="session-note"></div>
       <div class="group-controls" id="group-controls" aria-label="Who's in the room tonight"></div>
+      <div class="crew-actions" id="crew-actions"><button class="ghost-btn subtle" id="clear-tastes" title="Reset everyone's genres, mood and conviction — keeps the crew and its ledger">⌫ Clear this crew's tastes</button></div>
     </section>
 
     <!-- ========================== THE SHORTLIST ======================== -->
@@ -130,6 +132,9 @@
         <span class="mc-bulbs mc-bulbs-b" aria-hidden="true"></span>
       </div>
     </section>
+
+    <!-- ===================== QUICK TIEBREAK (item 16) ================= -->
+    <div class="quickmode" id="quickmode"></div>
 
     <!-- ============================= SETTLE ============================ -->
     <div class="settle" data-reveal>
@@ -168,12 +173,31 @@
             <p class="empty-note" id="debt-empty" style="display:none">No compromise debt yet — nobody's had to settle. Lock in a few picks and this fills in.</p>
           </div>
           <div>
-            <h4 class="mini-h">Recent verdicts</h4>
+            <h4 class="mini-h">Your last 10 picks</h4>
             <div id="history-list"></div>
             <p class="empty-note" id="history-empty" style="display:none">Nothing locked in yet.</p>
           </div>
         </div>
-        <button class="reset-ledger" id="reset-ledger">Reset this crew's memory</button>
+        <div id="insights" class="insights"></div>
+        <div class="scheduler" id="scheduler">
+          <h4 class="mini-h">🗓 Make it a ritual</h4>
+          <div class="sch-row">
+            <select id="sch-day" aria-label="Day of the week">
+              <option value="5">Fridays</option><option value="6">Saturdays</option><option value="0">Sundays</option>
+              <option value="1">Mondays</option><option value="2">Tuesdays</option><option value="3">Wednesdays</option><option value="4">Thursdays</option>
+            </select>
+            <input type="time" id="sch-time" value="20:00" aria-label="Time" />
+            <label class="sch-weekly"><input type="checkbox" id="sch-weekly" checked /> weekly</label>
+            <button class="ghost-btn" id="sch-ics">⭳ Add to calendar</button>
+          </div>
+          <p class="sch-note">Drops a movie-night reminder in your calendar — with a link to pre-set everyone's taste before you sit down.</p>
+        </div>
+        <div class="ledger-actions">
+          <button class="ghost-btn" id="export-json" title="Download this crew's full ledger as JSON">⭳ Export JSON</button>
+          <button class="ghost-btn" id="export-csv" title="Download picks + satisfaction as a spreadsheet">⭳ Export CSV</button>
+          <span class="la-spacer"></span>
+          <button class="reset-ledger" id="reset-ledger">Reset this crew's memory</button>
+        </div>
       </div>
     </section>
   </main>
@@ -279,6 +303,7 @@
 
   <script src="catalog.js"></script>
   <script src="engine.js"></script>
+  <script src="qr.js"></script>
   <script src="app.js"></script>
   <script src="visual.js"></script>
 </body>

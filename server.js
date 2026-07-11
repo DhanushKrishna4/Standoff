@@ -96,9 +96,44 @@ function handleApi(req, res, u) {
 
 // ---- static files (no-cache, path-guarded) -----------------------------------
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.md': 'text/markdown; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json', '.py': 'text/plain; charset=utf-8' };
+// Server-rendered verdict card (item 22) — a ticket-stub + clapperboard SVG built
+// from query params, matching the in-app card so it can back an OG image or a
+// direct share. SVG keeps it dependency-free; the client also renders a PNG.
+function handleCard(req, res) {
+  const q = new URL(req.url, 'http://x').searchParams;
+  const esc = (s) => String(s || '').replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c]));
+  const title = (q.get('title') || 'Tonight’s pick').slice(0, 64);
+  const hook = (q.get('hook') || '').slice(0, 84);
+  const meta = (q.get('meta') || '').slice(0, 80);
+  const conf = (q.get('confidence') || 'Settled').slice(0, 22);
+  // crude two-line wrap for the title (SVG has no auto-wrap)
+  const words = title.split(' '); const lines = ['', ''];
+  const limit = 22; let li = 0;
+  for (const w of words) { if ((lines[li] + ' ' + w).trim().length > limit && li === 0) li = 1; lines[li] = (lines[li] ? lines[li] + ' ' : '') + w; }
+  const clap = Array.from({ length: 22 }, (_, i) => `<rect x="${24 + i * 52.4}" y="24" width="53" height="16" fill="${i % 2 ? '#0d0b08' : '#f3b23e'}"/>`).join('');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+    <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#191007"/><stop offset="1" stop-color="#0d0b08"/></linearGradient></defs>
+    <rect width="1200" height="630" fill="url(#bg)"/>
+    <rect x="22" y="22" width="1156" height="586" rx="20" fill="none" stroke="rgba(243,178,62,0.55)" stroke-width="2"/>
+    ${clap}
+    <line x1="900" y1="60" x2="900" y2="586" stroke="rgba(255,240,220,0.14)" stroke-width="2" stroke-dasharray="6 8"/>
+    <text x="60" y="118" font-family="'JetBrains Mono',monospace" font-size="20" font-weight="600" fill="#f3b23e" letter-spacing="1">TONIGHT’S PICK</text>
+    <text x="60" y="196" font-family="'Fraunces',Georgia,serif" font-size="60" font-weight="600" fill="#f6efe2">${esc(lines[0])}</text>
+    ${lines[1] ? `<text x="60" y="260" font-family="'Fraunces',Georgia,serif" font-size="60" font-weight="600" fill="#f6efe2">${esc(lines[1])}</text>` : ''}
+    <text x="60" y="${lines[1] ? 312 : 250}" font-family="'Inter',system-ui,sans-serif" font-size="22" fill="#a99885">${esc(meta)}</text>
+    ${hook ? `<text x="60" y="${lines[1] ? 372 : 310}" font-family="'Fraunces',Georgia,serif" font-style="italic" font-size="26" fill="#ffd88a">“${esc(hook)}”</text>` : ''}
+    <text x="942" y="118" font-family="'JetBrains Mono',monospace" font-size="15" font-weight="600" fill="#776d5f">VERDICT</text>
+    <text x="942" y="152" font-family="'Fraunces',Georgia,serif" font-size="26" font-weight="600" fill="#f6efe2">${esc(conf)}</text>
+    <text x="60" y="582" font-family="'Inter',system-ui,sans-serif" font-size="18" fill="#776d5f">Settled fairly with Standoff · standoff-liyl.onrender.com</text>
+  </svg>`;
+  res.writeHead(200, { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'public, max-age=3600' });
+  res.end(svg);
+}
+
 const server = http.createServer((req, res) => {
   let u = decodeURIComponent((req.url || '/').split('?')[0]);
   if (u === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); return res.end('ok'); } // deploy health check
+  if (u === '/card.svg') return handleCard(req, res); // server-rendered ticket-stub image (item 22)
   if (u.startsWith('/api/')) return handleApi(req, res, u); // accounts + cloud persistence
   if (u === '/' || u.startsWith('/room/') || u.startsWith('/join')) u = '/index.html'; // pretty routes → app
   // Serve client assets only — never dotfiles (accounts + room ledgers live in
