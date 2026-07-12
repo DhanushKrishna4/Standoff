@@ -21,6 +21,7 @@ const fs = require('fs');
 const path = require('path');
 const engine = require('./engine.js');
 const { CATALOG } = require('./catalog.js');
+const { RedisBus } = require('./redis-min.js');
 
 const PORT = process.env.PORT || 4173;
 const ROOT = __dirname;
@@ -30,7 +31,78 @@ const DATA_DIR = process.env.DATA_DIR || ROOT;
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (e) {}
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const DATA_FILE = path.join(DATA_DIR, '.standoff-rooms.json');
+const ROOMS_SNAPSHOT = path.join(DATA_DIR, '.standoff-live-rooms.json'); // active rooms across restarts (item 27)
+const SNAP_KEY = 'standoff:rooms:snapshot'; // same, in Redis — survives a cross-container redeploy on an ephemeral disk
 const MAX_ROOM = 8;
+
+// ---- abuse / DoS limits (item 26). All overridable via env for tuning. -------
+const LIMITS = {
+  maxMsgBytes: Number(process.env.WS_MAX_MSG || 64 * 1024),      // reject frames larger than this
+  maxBufferBytes: Number(process.env.WS_MAX_BUF || 256 * 1024),  // cap the unparsed read buffer
+  maxRooms: Number(process.env.MAX_ROOMS || 5000),               // global room ceiling
+  maxConnsPerIp: Number(process.env.MAX_CONNS_PER_IP || 40),     // concurrent sockets per IP
+  msgRefillPerSec: Number(process.env.WS_MSG_RATE || 25),        // token-bucket refill
+  msgBurst: Number(process.env.WS_MSG_BURST || 50),              // token-bucket ceiling
+  heartbeatMs: 30000,                                            // server → client ping cadence
+  idleTimeoutMs: 75000,                                          // no traffic within → reap the socket
+  maxNameLen: 18, maxChatLen: 280, maxReactions: 1,
+};
+// Origin allow-list for the WebSocket upgrade (CSWSH protection). Browsers always
+// send Origin; a matching same-origin or an allow-listed one passes. Non-browser
+// clients (no Origin header) are allowed — they can't be tricked cross-site.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
+function originOk(req) {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  try { if (new URL(origin).host === req.headers.host) return true; } catch (e) {}
+  return ALLOWED_ORIGINS.includes(origin);
+}
+const clientIp = (req) => ((req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || (req.socket && req.socket.remoteAddress) || 'unknown';
+const connsByIp = new Map(); // ip -> count
+
+// ---- input validation (item 26) ----------------------------------------------
+const isStr = (v) => typeof v === 'string';
+const clampStr = (v, n) => (isStr(v) ? v.slice(0, n) : '');
+const KNOWN_STANCE = new Set(['love', 'like', 'dislike', 'veto', 'neutral']);
+// A person blob from an untrusted client — take only known fields, clamp sizes,
+// and drop anything malformed so a hostile payload can't bloat memory or poison
+// the engine.
+function sanitizePerson(p) {
+  if (!p || typeof p !== 'object') return DEFAULT_PERSON();
+  const genres = {};
+  if (p.genres && typeof p.genres === 'object') {
+    let n = 0;
+    for (const k of Object.keys(p.genres)) { if (n++ >= 20) break; if (isStr(k) && KNOWN_STANCE.has(p.genres[k])) genres[k.slice(0, 24)] = p.genres[k]; }
+  }
+  const mood = {};
+  if (p.mood && typeof p.mood === 'object') {
+    for (const k of ['brain', 'intensity', 'levity', 'pace', 'darkness', 'dialogue', 'novelty']) {
+      const v = p.mood[k]; if (typeof v === 'number' && isFinite(v)) mood[k] = Math.max(0, Math.min(1, v));
+    }
+  }
+  const rc = Number(p.runtimeCap);
+  return {
+    name: clampStr(p.name, LIMITS.maxNameLen),
+    genres, mood: Object.keys(mood).length ? mood : DEFAULT_PERSON().mood,
+    runtimeCap: isFinite(rc) ? Math.max(5, Math.min(999, rc)) : 999,
+    conviction: ['easy', 'normal', 'care'].includes(p.conviction) ? p.conviction : 'normal',
+  };
+}
+// A host-supplied pool — cap the custom list and disabled list, sanitise custom
+// candidates so they can't inject arbitrary huge objects into the engine.
+function sanitizePool(pool) {
+  if (!pool || typeof pool !== 'object') return null;
+  const disabled = Array.isArray(pool.disabled) ? pool.disabled.filter(isStr).slice(0, 400).map((s) => s.slice(0, 60)) : [];
+  const custom = Array.isArray(pool.custom) ? pool.custom.slice(0, 60).map((c) => ({
+    id: clampStr(c && c.id, 60) || 'x', title: clampStr(c && c.title, 80) || 'Untitled',
+    genres: Array.isArray(c && c.genres) ? c.genres.filter(isStr).slice(0, 3) : ['Drama'],
+    runtime: Math.max(5, Math.min(600, Number(c && c.runtime) || 100)),
+    brain: 0.5, intensity: 0.5, levity: 0.5,
+    kind: c && c.kind === 'Series' ? 'Series' : 'Film', year: Number(c && c.year) || undefined,
+    hook: clampStr(c && c.hook, 120),
+  })) : [];
+  return { disabled, custom };
+}
 
 // ---- per-room fairness memory, persisted to disk -----------------------------
 let db = {};
@@ -133,12 +205,14 @@ function handleCard(req, res) {
 const server = http.createServer((req, res) => {
   let u = decodeURIComponent((req.url || '/').split('?')[0]);
   if (u === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); return res.end('ok'); } // deploy health check
+  if (u === '/metrics') { const mu = process.memoryUsage(); res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); return res.end(JSON.stringify({ rooms: rooms.size, clients: allClients.size, ips: connsByIp.size, rssMB: Math.round(mu.rss / 1048576), heapMB: Math.round(mu.heapUsed / 1048576), uptime: Math.round(process.uptime()) })); } // ops + load-test observability
   if (u === '/card.svg') return handleCard(req, res); // server-rendered ticket-stub image (item 22)
   if (u.startsWith('/api/')) return handleApi(req, res, u); // accounts + cloud persistence
   if (u === '/' || u.startsWith('/room/') || u.startsWith('/join')) u = '/index.html'; // pretty routes → app
   // Serve client assets only — never dotfiles (accounts + room ledgers live in
   // .standoff-*.json), the server source, tests, or tooling.
-  if (u.split('/').some((s) => s.startsWith('.')) || u.startsWith('/scripts/') || /(^|\/)(server\.js|[^/]*\.test\.js)$/.test(u)) {
+  if (u.split('/').some((s) => s.startsWith('.')) || u.startsWith('/scripts/') || u.startsWith('/node_modules/') || u.startsWith('/e2e/')
+    || /(^|\/)(server\.js|redis-min\.js|package(-lock)?\.json|playwright\.config\.js|[^/]*\.test\.js)$/.test(u)) {
     res.writeHead(404); return res.end('not found');
   }
   const fp = path.normalize(path.join(ROOT, u));
@@ -152,24 +226,63 @@ const server = http.createServer((req, res) => {
 
 // ---- rooms -------------------------------------------------------------------
 const rooms = new Map(); // code -> { code, hostId, clients: Map(id -> client), pool, exclude:Set, result }
+const allClients = new Set(); // every live socket, for heartbeat + graceful shutdown
+const GRACE_MS = Number(process.env.WS_GRACE_MS || 30000); // keep a seat this long after a drop, for reconnect
+
+// Event-loop lag gauge + a bound on how many verdict analyses may be queued at
+// once. The analysis is CPU-heavy and optional; under heavy concurrent load we
+// shed it (the verdict still lands instantly) so it can't starve connection
+// handshakes or other verdicts. Found + tuned via the load test (item 30).
+let elLagMs = 0, lagRef = Date.now();
+setInterval(() => { const now = Date.now(); elLagMs = now - lagRef - 100; lagRef = now; }, 100).unref();
+let analysisQueue = 0;
+const ANALYSIS_MAX_QUEUE = Number(process.env.ANALYSIS_MAX_QUEUE || 4);
+
+// ---- optional cross-instance scale-out (item 27) -----------------------------
+// With REDIS_URL set, every room broadcast is also published to a shared Redis
+// channel; sibling instances relay it to *their* local members of that room, so a
+// verdict / chat / presence fans out across a horizontally-scaled fleet. Without
+// it, broadcasts stay purely in-memory (single instance) — the dependency-free
+// default. (Render's free tier is a single instance, so this is opt-in headroom.)
+const INSTANCE = crypto.randomBytes(4).toString('hex');
+let bus = null;
+if (process.env.REDIS_URL) {
+  bus = new RedisBus(process.env.REDIS_URL, (channel, payload) => {
+    if (channel !== 'standoff:bus') return;
+    let m; try { m = JSON.parse(payload); } catch (e) { return; }
+    if (!m || m.from === INSTANCE || !m.code) return;   // ignore our own echoes
+    const room = rooms.get(m.code);
+    if (room) for (const c of room.clients.values()) send(c.sock, m.obj);
+  }, (s) => console.log(s));
+  bus.subscribe('standoff:bus');
+  console.log('Scale-out: Redis pub/sub bus connected (instance ' + INSTANCE + ').');
+}
 const roomCode = () => { const A = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; let s = ''; for (let i = 0; i < 4; i++) s += A[(Math.random() * A.length) | 0]; return s; };
 const uid = () => Math.random().toString(36).slice(2, 9);
 
 const DEFAULT_PERSON = () => ({ name: '', genres: {}, mood: { brain: 0.5, intensity: 0.5, levity: 0.5 }, runtimeCap: 999, conviction: 'normal' });
 const hasTaste = (p) => p && (Object.keys(p.genres || {}).length > 0 || (p.name || '').trim());
 
+const mkey = (c) => c.clientId || c.id;                 // stable membership key (survives reconnects)
+const voters = (room) => [...room.clients.values()].filter((c) => !c.spectator);
+const REACTIONS = new Set(['🎉', '😂', '🔥', '❤️', '👍', '👎', '😱', '🍿', '💯', '🙌']);
+
 function roomPublic(room) {
   return {
     code: room.code, hostId: room.hostId,
-    participants: [...room.clients.values()].map((c) => ({ id: c.id, name: c.name || '', avatarIndex: c.avatarIndex || 0, ready: hasTaste(c.person) })),
+    participants: [...room.clients.values()].map((c) => ({ id: mkey(c), name: c.name || '', avatarIndex: c.avatarIndex || 0, ready: hasTaste(c.person), spectator: !!c.spectator, deciding: !!c.deciding })),
+    nights: (db[room.code] && db[room.code].nights) || 0,
   };
 }
-function broadcast(room, obj) { for (const c of room.clients.values()) send(c.sock, obj); }
+function broadcast(room, obj) {
+  for (const c of room.clients.values()) send(c.sock, obj);
+  if (bus) bus.publish('standoff:bus', JSON.stringify({ from: INSTANCE, code: room.code, obj })); // fan out to sibling instances
+}
 function presence(room) { broadcast(room, { t: 'presence', room: roomPublic(room) }); }
 
 function engineCrew(room) {
   const seen = {};
-  return [...room.clients.values()].map((c, i) => {
+  return voters(room).map((c, i) => {
     let n = (c.name || '').trim() || `Guest ${i + 1}`;
     let k = n.toLowerCase(); if (seen[k]) { n = `${n} ${i + 1}`; k = n.toLowerCase(); } seen[k] = true;
     const p = c.person || DEFAULT_PERSON();
@@ -183,73 +296,112 @@ function activeCatalog(room) {
 }
 
 function doResolve(room, kind) {
-  if (room.clients.size < 2) { broadcast(room, { t: 'notice', msg: 'Need at least two people in the room to settle.' }); return; }
+  if (voters(room).length < 2) { broadcast(room, { t: 'notice', msg: 'Need at least two people in the room to settle.' }); return; }
   const mem = memFor(room.code);
   if (kind === 'settle') room.exclude = new Set();
   if (kind === 'reroll' && room.result && room.result.pick) room.exclude.add(room.result.pick.id);
   if (kind === 'seen' && room.result && room.result.pick) { engine.markSeen(mem, room.result.pick.id, true); saveDb(); room.exclude = new Set(); }
-  let result, analysis = null;
+  let result;
   try {
-    const crew = engineCrew(room), cat = activeCatalog(room);
-    result = engine.resolve(crew, cat, { exclude: [...room.exclude] }, mem);
-    if (!result.empty) { try { analysis = engine.analyzeVerdict(crew, cat, mem, result); } catch (e) {} }
+    result = engine.resolve(engineCrew(room), activeCatalog(room), { exclude: [...room.exclude] }, mem);
   } catch (e) { broadcast(room, { t: 'notice', msg: e.message || 'Could not settle.' }); return; }
   room.result = result;
-  broadcast(room, { t: 'verdict', title: result.empty ? null : result.pick.title, result, analysis });
+  broadcast(room, { t: 'verdict', title: result.empty ? null : result.pick.title, result, analysis: null });
+  // The robustness / strategyproofness analysis is CPU-heavy; compute it OFF the
+  // settle's critical path (setImmediate) so the verdict lands instantly and many
+  // concurrent rooms don't queue behind each other's analysis — a bottleneck the
+  // load test (item 30) surfaced. It arrives moments later as its own message.
+  if (!result.empty) {
+    if (analysisQueue >= ANALYSIS_MAX_QUEUE || elLagMs > 200) { broadcast(room, { t: 'analysis', analysis: null, skipped: true }); return; } // shed under pressure
+    analysisQueue++;
+    setImmediate(() => {
+      analysisQueue--;
+      if (room.result !== result) return;   // a re-roll superseded this verdict
+      let analysis = null;
+      try { analysis = engine.analyzeVerdict(engineCrew(room), activeCatalog(room), memFor(room.code), result); } catch (e) {}
+      if (analysis && room.result === result) broadcast(room, { t: 'analysis', analysis });
+      else if (!analysis) broadcast(room, { t: 'analysis', analysis: null, skipped: true });
+    });
+  }
 }
 
+function removeMember(room, key) {
+  const m = room.clients.get(key);
+  if (m && m.ghostTimer) clearTimeout(m.ghostTimer);
+  room.clients.delete(key);
+  if (room.clients.size === 0) { rooms.delete(room.code); return; }
+  if (room.hostId === key) room.hostId = mkey(voters(room)[0] || [...room.clients.values()][0]); // promote a voter (or anyone left)
+  presence(room);
+}
+// A socket close is treated as an *accidental* drop: keep the seat as a "ghost"
+// for a grace window so a wifi blip / phone lock can reconnect into the same seat
+// (and host role). A deliberate exit sends {t:'leave'} first, which removes at once.
 function closeClient(client) {
   const room = client.roomCode && rooms.get(client.roomCode);
   if (!room) return;
-  room.clients.delete(client.id);
-  if (room.clients.size === 0) { rooms.delete(room.code); return; }
-  if (room.hostId === client.id) room.hostId = room.clients.keys().next().value; // promote someone
+  const key = mkey(client);
+  const member = room.clients.get(key);
+  if (member !== client) return;                        // already replaced by a reconnect — leave the member be
+  member.sock = null; member.disconnected = true;
+  member.ghostTimer = setTimeout(() => { if (room.clients.get(key) === member && !member.sock) removeMember(room, key); }, GRACE_MS);
   presence(room);
 }
 
 function handle(client, msg) {
   switch (msg.t) {
     case 'create': {
+      if (rooms.size >= LIMITS.maxRooms) return send(client.sock, { t: 'error', msg: 'The server is at capacity — try again shortly.' });
+      if (client.roomsCreated >= 8) return send(client.sock, { t: 'error', msg: 'Too many rooms from this connection.' });
+      client.clientId = clampStr(msg.clientId, 40) || client.id;
       let code = roomCode(); while (rooms.has(code)) code = roomCode();
-      const room = { code, hostId: client.id, clients: new Map(), pool: msg.pool || null, exclude: new Set(), result: null };
+      const room = { code, hostId: client.clientId, clients: new Map(), pool: sanitizePool(msg.pool), exclude: new Set(), result: null, chat: [], createdAt: Date.now() };
       rooms.set(code, room);
-      client.name = (msg.name || '').slice(0, 18); client.avatarIndex = msg.avatarIndex | 0; client.person = msg.person || DEFAULT_PERSON(); client.roomCode = code;
-      room.clients.set(client.id, client);
-      send(client.sock, { t: 'joined', code, youId: client.id, host: true, room: roomPublic(room) });
+      client.roomsCreated++;
+      client.name = clampStr(msg.name, LIMITS.maxNameLen); client.avatarIndex = (msg.avatarIndex | 0) & 15; client.person = sanitizePerson(msg.person); client.roomCode = code; client.spectator = false;
+      room.clients.set(client.clientId, client);
+      send(client.sock, { t: 'joined', code, youId: client.clientId, host: true, spectator: false, room: roomPublic(room), chat: [] });
       presence(room);
       break;
     }
     case 'join': {
-      const room = rooms.get(String(msg.code || '').toUpperCase());
+      const room = rooms.get(clampStr(msg.code, 8).toUpperCase());
       if (!room) return send(client.sock, { t: 'error', msg: 'No room with that code.' });
-      if (room.clients.size >= MAX_ROOM) return send(client.sock, { t: 'error', msg: 'That room is full.' });
-      client.name = (msg.name || '').slice(0, 18); client.avatarIndex = msg.avatarIndex | 0; client.person = msg.person || DEFAULT_PERSON(); client.roomCode = room.code;
-      room.clients.set(client.id, client);
-      send(client.sock, { t: 'joined', code: room.code, youId: client.id, host: room.hostId === client.id, room: roomPublic(room) });
+      client.clientId = clampStr(msg.clientId, 40) || client.id;
+      const existing = room.clients.get(client.clientId);
+      const wasHost = room.hostId === client.clientId;                 // a reconnecting host keeps the crown
+      const spectator = !!msg.spectator && !wasHost;
+      if (!spectator && !existing && voters(room).length >= MAX_ROOM) return send(client.sock, { t: 'error', msg: 'That room is full — join as a spectator?' });
+      client.name = clampStr(msg.name, LIMITS.maxNameLen); client.avatarIndex = (msg.avatarIndex | 0) & 15; client.person = sanitizePerson(msg.person); client.roomCode = room.code; client.spectator = spectator;
+      const old = existing && existing.sock;
+      if (existing && existing.ghostTimer) clearTimeout(existing.ghostTimer);   // cancel pending eviction
+      room.clients.set(client.clientId, client);                       // reconnect: replace the member's socket, keep identity
+      if (old && old !== client.sock) { try { old.destroy(); } catch (e) {} }
+      send(client.sock, { t: 'joined', code: room.code, youId: client.clientId, host: wasHost, spectator, room: roomPublic(room), chat: room.chat.slice(-40) });
       presence(room);
       break;
     }
     case 'me': {
       const room = rooms.get(client.roomCode); if (!room) return;
-      if (typeof msg.name === 'string') client.name = msg.name.slice(0, 18);
-      if (typeof msg.avatarIndex === 'number') client.avatarIndex = msg.avatarIndex | 0;
-      if (msg.person) client.person = msg.person;
+      if (isStr(msg.name)) client.name = clampStr(msg.name, LIMITS.maxNameLen);
+      if (typeof msg.avatarIndex === 'number') client.avatarIndex = (msg.avatarIndex | 0) & 15;
+      if (msg.person) client.person = sanitizePerson(msg.person);
+      if (typeof msg.deciding === 'boolean') client.deciding = msg.deciding;   // live "still deciding…" indicator
       presence(room);
       break;
     }
-    case 'pool': {
-      const room = rooms.get(client.roomCode); if (!room || room.hostId !== client.id) return;
-      room.pool = msg.pool || null;
+    case 'pool': {   // host syncs their custom pool to the room
+      const room = rooms.get(client.roomCode); if (!room || room.hostId !== mkey(client)) return;
+      room.pool = sanitizePool(msg.pool);
       break;
     }
     case 'settle': case 'reroll': case 'seen': {
-      const room = rooms.get(client.roomCode); if (!room || room.hostId !== client.id) return;
+      const room = rooms.get(client.roomCode); if (!room || room.hostId !== mkey(client)) return;
       doResolve(room, msg.t);
       break;
     }
     case 'lock': {
       const room = rooms.get(client.roomCode);
-      if (!room || room.hostId !== client.id || !room.result || room.result.empty) return;
+      if (!room || room.hostId !== mkey(client) || !room.result || room.result.empty) return;
       db[room.code] = engine.commit(memFor(room.code), room.result.pick, room.result._committable.normForPick);
       saveDb();
       broadcast(room, { t: 'locked' });
@@ -261,17 +413,55 @@ function handle(client, msg) {
     case 'whatif': {
       const room = rooms.get(client.roomCode);
       if (!room || !room.result || room.result.empty) return;
-      const { who, genre, to } = msg;
+      const who = clampStr(msg.who, 40), genre = clampStr(msg.genre, 24), to = KNOWN_STANCE.has(msg.to) ? msg.to : 'neutral';
       const crew = engineCrew(room).map((p) => ({ ...p, genres: { ...p.genres } }));
       const person = crew.find((p) => p.name === who);
       if (!person) return;
-      if (!to || to === 'neutral') delete person.genres[genre]; else person.genres[genre] = to;
+      if (to === 'neutral' || to === 'veto') { if (to === 'veto') person.genres[genre] = 'veto'; else delete person.genres[genre]; } else person.genres[genre] = to;
       let res;
       try { res = engine.resolve(crew, activeCatalog(room), { exclude: [...room.exclude] }, memFor(room.code)); }
       catch (e) { return; }
       if (res.empty) { send(client.sock, { t: 'whatif', who, genre, to, empty: true }); break; }
       const lh = [...res.explanation.perPerson].sort((a, b) => a.util - b.util)[0];
       send(client.sock, { t: 'whatif', who, genre, to, title: res.pick.title, same: res.pick.id === room.result.pick.id, leastHappy: lh ? { name: lh.name, label: lh.label } : null });
+      break;
+    }
+    case 'chat': {   // per-room chat (item 28)
+      const room = rooms.get(client.roomCode); if (!room) return;
+      const text = clampStr(msg.text, LIMITS.maxChatLen).replace(/\s+/g, ' ').trim(); if (!text) return;
+      const entry = { id: mkey(client), from: client.name || 'Guest', text, at: Date.now() };
+      room.chat.push(entry); if (room.chat.length > 200) room.chat.shift();
+      broadcast(room, { t: 'chat', id: entry.id, from: entry.from, text: entry.text, at: entry.at });
+      break;
+    }
+    case 'react': {  // live reactions during the reveal (item 28)
+      const room = rooms.get(client.roomCode); if (!room || !REACTIONS.has(msg.emoji)) return;
+      broadcast(room, { t: 'react', id: mkey(client), from: client.name || 'Guest', emoji: msg.emoji });
+      break;
+    }
+    case 'host': {   // host handoff (item 28)
+      const room = rooms.get(client.roomCode); if (!room || room.hostId !== mkey(client)) return;
+      const to = clampStr(msg.to, 40); const target = room.clients.get(to);
+      if (target && !target.spectator) { room.hostId = to; presence(room); }
+      break;
+    }
+    case 'kick': {   // host removes a member (item 28)
+      const room = rooms.get(client.roomCode); if (!room || room.hostId !== mkey(client)) return;
+      const id = clampStr(msg.id, 40); if (id === room.hostId) return;
+      const target = room.clients.get(id);
+      if (target) { send(target.sock, { t: 'kicked' }); target.roomCode = null; room.clients.delete(id); if (target.sock) { try { target.sock.destroy(); } catch (e) {} } presence(room); }
+      break;
+    }
+    case 'spectate': {  // toggle spectator mode (item 28)
+      const room = rooms.get(client.roomCode); if (!room || room.hostId === mkey(client)) return;
+      const on = !!msg.on;
+      if (!on && voters(room).length >= MAX_ROOM) return send(client.sock, { t: 'notice', msg: 'The couch is full — staying a spectator.' });
+      client.spectator = on; presence(room);
+      break;
+    }
+    case 'leave': {   // deliberate exit — remove at once (vs an accidental drop, which grace-ghosts)
+      const room = rooms.get(client.roomCode); if (!room) return;
+      removeMember(room, mkey(client)); client.roomCode = null;
       break;
     }
     case 'ping': send(client.sock, { t: 'pong' }); break;
@@ -293,14 +483,36 @@ function send(sock, obj) {
 server.on('upgrade', (req, sock) => {
   const key = req.headers['sec-websocket-key'];
   if (!key) { sock.destroy(); return; }
+  if (!originOk(req)) { try { sock.write('HTTP/1.1 403 Forbidden\r\n\r\n'); } catch (e) {} sock.destroy(); return; } // CSWSH guard
+  const ip = clientIp(req);
+  const nConns = connsByIp.get(ip) || 0;
+  if (nConns >= LIMITS.maxConnsPerIp) { try { sock.write('HTTP/1.1 429 Too Many Requests\r\n\r\n'); } catch (e) {} sock.destroy(); return; }
+  connsByIp.set(ip, nConns + 1);
+
   const accept = crypto.createHash('sha1').update(key + WS_GUID).digest('base64');
   sock.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ' + accept + '\r\n\r\n');
   sock.on('error', () => {});
   sock.setTimeout(0);
 
-  const client = { id: uid(), sock, name: '', avatarIndex: 0, person: null, roomCode: null };
+  const client = { id: uid(), sock, ip, name: '', avatarIndex: 0, person: null, roomCode: null, clientId: null, spectator: false,
+    tokens: LIMITS.msgBurst, last: Date.now(), alive: true, roomsCreated: 0 };
+  allClients.add(client);
+  let released = false;
+  const release = () => { if (released) return; released = true; allClients.delete(client); const c = (connsByIp.get(ip) || 1) - 1; if (c <= 0) connsByIp.delete(ip); else connsByIp.set(ip, c); };
+
+  // token-bucket rate limiter (item 26)
+  function allow() {
+    const now = Date.now();
+    client.tokens = Math.min(LIMITS.msgBurst, client.tokens + ((now - client.last) / 1000) * LIMITS.msgRefillPerSec);
+    client.last = now;
+    if (client.tokens < 1) return false;
+    client.tokens -= 1; return true;
+  }
+
   let buf = Buffer.alloc(0);
   sock.on('data', (chunk) => {
+    client.alive = true;
+    if (buf.length + chunk.length > LIMITS.maxBufferBytes) { closeClient(client); sock.destroy(); release(); return; } // buffer DoS guard
     buf = Buffer.concat([buf, chunk]);
     while (buf.length >= 2) {
       const opcode = buf[0] & 0x0f;
@@ -308,19 +520,113 @@ server.on('upgrade', (req, sock) => {
       let len = buf[1] & 0x7f, off = 2;
       if (len === 126) { if (buf.length < 4) break; len = buf.readUInt16BE(2); off = 4; }
       else if (len === 127) { if (buf.length < 10) break; len = Number(buf.readBigUInt64BE(2)); off = 10; }
-      let mask;
-      if (masked) { if (buf.length < off + 4) break; mask = buf.subarray(off, off + 4); off += 4; }
+      if (len > LIMITS.maxMsgBytes) { closeClient(client); sock.destroy(); release(); return; }   // oversized frame → drop the peer
+      if (!masked) { closeClient(client); sock.destroy(); release(); return; }                      // clients MUST mask (RFC 6455)
+      if (buf.length < off + 4) break;
+      const mask = buf.subarray(off, off + 4); off += 4;
       if (buf.length < off + len) break; // wait for the rest of the frame
       let payload = buf.subarray(off, off + len);
-      if (masked && mask) { const out = Buffer.alloc(len); for (let i = 0; i < len; i++) out[i] = payload[i] ^ mask[i & 3]; payload = out; }
+      const out = Buffer.alloc(len); for (let i = 0; i < len; i++) out[i] = payload[i] ^ mask[i & 3]; payload = out;
       buf = buf.subarray(off + len);
-      if (opcode === 0x8) { closeClient(client); sock.destroy(); return; }         // close
-      else if (opcode === 0x9) { try { sock.write(Buffer.from([0x8a, 0])); } catch (e) {} } // ping → pong
-      else if (opcode === 0x1) { try { handle(client, JSON.parse(payload.toString('utf8'))); } catch (e) {} } // text
-      // (binary / continuation frames are not used by this app)
+      if (opcode === 0x8) { closeClient(client); sock.destroy(); release(); return; }               // close
+      else if (opcode === 0x9) { try { sock.write(Buffer.from([0x8a, 0])); } catch (e) {} }          // ping → pong
+      else if (opcode === 0xa) { client.alive = true; }                                             // pong (heartbeat reply)
+      else if (opcode === 0x1) {                                                                     // text
+        if (!allow()) continue;                                                                      // rate-limited → silently drop
+        let m; try { m = JSON.parse(payload.toString('utf8')); } catch (e) { continue; }
+        if (m && typeof m === 'object' && isStr(m.t)) { try { handle(client, m); } catch (e) {} }
+      }
     }
   });
-  sock.on('close', () => closeClient(client));
+  sock.on('close', () => { closeClient(client); release(); });
 });
 
-server.listen(PORT, () => console.log(`Standoff live — http://localhost:${PORT}`));
+// Heartbeat: ping every client on a cadence; reap any that hasn't produced traffic
+// (data or a pong) since the last sweep — clears zombie sockets a proxy dropped.
+const PING_FRAME = Buffer.from([0x89, 0]);
+const heartbeat = setInterval(() => {
+  for (const c of allClients) {
+    if (!c.sock || c.sock.destroyed) { allClients.delete(c); continue; }
+    if (!c.alive) { try { c.sock.destroy(); } catch (e) {} closeClient(c); allClients.delete(c); continue; }
+    c.alive = false;
+    try { c.sock.write(PING_FRAME); } catch (e) {}
+  }
+}, LIMITS.heartbeatMs);
+heartbeat.unref();
+
+// ---- graceful restart that PRESERVES active rooms (item 27) -------------------
+// On SIGTERM (Render sends one before every redeploy) we snapshot each live room's
+// membership to disk. On the next boot we restore them as "ghost" members with no
+// socket; when their clients reconnect (by stable clientId) they slot back into the
+// same room, same host — the night survives a deploy. A TTL sweep clears rooms
+// nobody rejoins.
+function snapshotRooms() {
+  const out = [];
+  for (const room of rooms.values()) {
+    const members = [...room.clients.values()].map((c) => ({ clientId: mkey(c), name: c.name, avatarIndex: c.avatarIndex, person: c.person, spectator: !!c.spectator }));
+    if (!members.length) continue;
+    out.push({ code: room.code, hostId: room.hostId, pool: room.pool, exclude: [...(room.exclude || [])], chat: (room.chat || []).slice(-40), createdAt: room.createdAt, members });
+  }
+  return out;
+}
+function loadRoomsFromJson(text) {
+  let snap = [];
+  try { snap = JSON.parse(text) || []; } catch (e) { return; }
+  const now = Date.now();
+  for (const r of snap) {
+    if (!r || !r.code || !Array.isArray(r.members) || rooms.has(r.code)) continue;
+    const room = { code: r.code, hostId: r.hostId, clients: new Map(), pool: r.pool || null, exclude: new Set(r.exclude || []), result: null, chat: r.chat || [], createdAt: r.createdAt || now, restoredAt: now };
+    for (const m of r.members) {
+      // ghost member: no socket until its client reconnects. send() no-ops on null sockets.
+      room.clients.set(m.clientId, { id: m.clientId, clientId: m.clientId, sock: null, name: m.name || '', avatarIndex: m.avatarIndex || 0, person: m.person || DEFAULT_PERSON(), spectator: !!m.spectator, roomCode: r.code, deciding: false, disconnected: true });
+    }
+    if (room.clients.size) rooms.set(r.code, room);
+  }
+}
+function loadRooms() {
+  let text = null;
+  try { text = fs.readFileSync(ROOMS_SNAPSHOT, 'utf8'); } catch (e) { return; }
+  try { fs.unlinkSync(ROOMS_SNAPSHOT); } catch (e) {}   // consume it — don't resurrect on the boot after this
+  loadRoomsFromJson(text);
+}
+// Reap restored rooms that nobody reconnected to, and stale empty rooms.
+const roomSweep = setInterval(() => {
+  const now = Date.now();
+  for (const [code, room] of rooms) {
+    const live = [...room.clients.values()].some((c) => c.sock && !c.sock.destroyed);
+    if (!live && room.restoredAt && now - room.restoredAt > 10 * 60 * 1000) rooms.delete(code);
+  }
+}, 60 * 1000);
+roomSweep.unref();
+
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return; shuttingDown = true;
+  const json = JSON.stringify(snapshotRooms());
+  try { fs.writeFileSync(ROOMS_SNAPSHOT, json); } catch (e) {}                    // disk snapshot (same-machine restart)
+  try { fs.writeFileSync(DATA_FILE, JSON.stringify(db)); } catch (e) {}          // flush debounced writes
+  try { fs.writeFileSync(ACC_FILE, JSON.stringify(accounts)); } catch (e) {}
+  for (const room of rooms.values()) broadcast(room, { t: 'notice', msg: 'Server updating — reconnecting you…' });
+  // Redis snapshot (survives a fresh-container redeploy) — AWAIT it so it flushes
+  // to Redis before we tear down, then drop the client sockets so they reconnect.
+  const hardStop = setTimeout(() => process.exit(0), 3000); hardStop.unref();
+  if (bus) { try { await Promise.race([bus.set(SNAP_KEY, json, 900), new Promise((r) => setTimeout(r, 2000))]); } catch (e) {} }
+  for (const c of allClients) { try { c.sock && c.sock.destroy(); } catch (e) {} }
+  try { server.close(() => process.exit(0)); } catch (e) { process.exit(0); }
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+
+async function boot() {
+  if (bus) {
+    // Prefer the Redis snapshot (survives a fresh-container redeploy); else disk.
+    try {
+      const snap = await Promise.race([bus.get(SNAP_KEY), new Promise((res) => setTimeout(() => res(null), 2000))]);
+      if (snap) { loadRoomsFromJson(snap); bus.del(SNAP_KEY); }
+    } catch (e) {}
+  }
+  loadRooms();   // disk snapshot (merges any codes Redis didn't have; skips dupes)
+  if (rooms.size) console.log(`Restored ${rooms.size} live room(s) from the last shutdown.`);
+  server.listen(PORT, () => console.log(`Standoff live — http://localhost:${PORT}`));
+}
+boot();

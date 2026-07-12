@@ -725,6 +725,12 @@
     label.textContent = 'Tallying the room…';
     sub.textContent = `Merging ${state.crew.length} tastes across ${resolveMenu().length} options · tap to skip`;
     board.innerHTML = ''; overlay.classList.add('show'); overlay.setAttribute('aria-hidden', 'false');
+    // Live reactions during the reveal, in a room (item 28).
+    const reacts = $('#reveal-reacts');
+    if (reacts) {
+      if (state.mode === 'room') { reacts.hidden = false; reacts.innerHTML = ROOM_REACTIONS.map((e) => `<button type="button" class="reaction-btn" data-react="${e}">${e}</button>`).join(''); reacts.onclick = (e) => { const b = e.target.closest('.reaction-btn'); if (b) { Room.send({ t: 'react', emoji: b.dataset.react }); e.stopPropagation(); } }; }
+      else { reacts.hidden = true; reacts.innerHTML = ''; }
+    }
     const cells = [], timers = []; let remaining = 0, li = 0, finished = false;
     [...target].forEach((ch) => {
       const el = document.createElement('span');
@@ -972,8 +978,10 @@
     const body = document.querySelector('#solidity-body');
     if (!body) return;
     // In a live room the client never sees others' tastes, so the server ships the
-    // analysis; solo mode computes it locally.
+    // analysis (a beat after the verdict — it's off the settle's critical path).
+    // Keep the "stress-testing…" state until it lands; solo mode computes locally.
     let a = state.mode === 'room' ? (r.analysis || null) : null;
+    if (state.mode === 'room' && !a) return;   // wait for the server's {t:'analysis'} message
     if (!a) { try { a = E.analyzeVerdict(engineCrew(), resolveMenu(), state.memory, r); } catch (e) { document.querySelector('#solidity')?.remove(); return; } }
     if (!a) { document.querySelector('#solidity')?.remove(); return; }
     const cat = fullLibrary(), titleOf = (id) => (cat.find((c) => c.id === id) || {}).title || 'another option';
@@ -1444,7 +1452,7 @@
       if (retries >= 6) { retries = 0; toast('Lost the room — you were disconnected.'); leaveRoom(true); return; }
       retries++;
       toast(retries === 1 ? 'Reconnecting…' : `Reconnecting… (${retries})`);
-      setTimeout(() => connect((ok) => { if (!ok) return tryReconnect(); reconnecting = true; send({ t: 'join', code: state.room.code, name: state.me.name, avatarIndex: 0, person: mePayload() }); }), Math.min(900 * retries, 4000));
+      setTimeout(() => connect((ok) => { if (!ok) return tryReconnect(); reconnecting = true; send({ t: 'join', code: state.room.code, clientId: myClientId, spectator: !!(state.room && state.room.spectator), name: state.me.name, avatarIndex: 0, person: mePayload() }); }), Math.min(900 * retries, 4000));
     }
     return {
       connect, send,
@@ -1454,31 +1462,56 @@
     };
   })();
 
+  // A stable per-browser id so a reconnect (wifi blip, or a server redeploy) slots
+  // back into the same seat + host role (items 27, 29).
+  const CLIENT_ID_KEY = 'standoff:clientId:v1';
+  const myClientId = (() => { let id = store.get(CLIENT_ID_KEY); if (!id) { id = 'c-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36); store.set(CLIENT_ID_KEY, id); } return id; })();
   const makeMe = (name) => ({ id: 'me', name: name || '', genres: {}, mood: { brain: 0.5, intensity: 0.5, levity: 0.5 }, runtimeCap: NO_LIMIT, conviction: 'normal' });
   const mePayload = () => ({ name: state.me.name, genres: state.me.genres, mood: state.me.mood, runtimeCap: state.me.runtimeCap >= NO_LIMIT ? 999 : state.me.runtimeCap, conviction: state.me.conviction || 'normal' });
-  let syncTimer;
-  function syncMe() { if (state.mode !== 'room') return; clearTimeout(syncTimer); syncTimer = setTimeout(() => Room.send({ t: 'me', name: state.me.name, person: mePayload() }), 220); }
+  let syncTimer, decidingTimer;
+  function syncMe() {
+    if (state.mode !== 'room') return;
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => Room.send({ t: 'me', name: state.me.name, person: mePayload(), deciding: true }), 220);
+    clearTimeout(decidingTimer);
+    decidingTimer = setTimeout(() => Room.send({ t: 'me', deciding: false }), 2600);   // clears the "still deciding…" pip
+  }
 
+  let roomChat = [];
   function dispatch(m) {
     if (m.t === 'joined') {
       if (reconnecting && state.mode === 'room' && state.room) {
         reconnecting = false; Room.resetRetries();
-        state.room.youId = m.youId; state.room.host = !!m.host;
-        if (m.room) { state.room.participants = m.room.participants; state.room.hostId = m.room.hostId; }
-        renderRoster(); updateSettle(); toast('Reconnected.');
+        state.room.youId = m.youId; state.room.host = !!m.host; state.room.spectator = !!m.spectator;
+        if (m.room) { state.room.participants = m.room.participants; state.room.hostId = m.room.hostId; state.room.nights = m.room.nights || 0; }
+        if (Array.isArray(m.chat)) { roomChat = m.chat; renderChat(); }
+        renderRoom(); updateSettle(); toast('Reconnected.');
       } else enterRoom(m);
     }
-    else if (m.t === 'presence' && state.room) { state.room.participants = m.room.participants; state.room.hostId = m.room.hostId; state.room.host = m.room.hostId === state.room.youId; renderRoster(); updateSettle(); }
+    else if (m.t === 'presence' && state.room) { const wasHost = state.room.host; state.room.participants = m.room.participants; state.room.hostId = m.room.hostId; state.room.host = m.room.hostId === state.room.youId; state.room.nights = m.room.nights || 0; if (wasHost !== state.room.host) renderRoom(); else renderRoster(); updateSettle(); }
     else if (m.t === 'verdict') onVerdict(m);
     else if (m.t === 'locked') onLocked();
     else if (m.t === 'error') { if (reconnecting) { reconnecting = false; toast(m.msg || 'The room is gone.'); leaveRoom(true); } else setRoomNote(m.msg); }
     else if (m.t === 'notice') toast(m.msg);
     else if (m.t === 'whatif') onRoomWhatIf(m);
+    else if (m.t === 'analysis') onAnalysis(m);
+    else if (m.t === 'chat') onChat(m);
+    else if (m.t === 'react') floatReaction(m);
+    else if (m.t === 'kicked') { toast('The host removed you from the room.'); leaveRoom(true); }
+  }
+  // The server ships the robustness/strategy analysis a beat after the verdict
+  // (it's off the settle's critical path). Fill in the solidity panel when it lands.
+  function onAnalysis(m) {
+    if (!state.result || state.result.empty) return;
+    if (m.skipped) { const el = document.querySelector('#solidity-body'); if (el) el.innerHTML = '<span class="analyzing">Skipping the deep stress-test — the room server is busy right now. The verdict itself still stands.</span>'; return; }
+    state.result.analysis = m.analysis;
+    if (document.querySelector('#solidity-body')) injectSolidity(state.result);
   }
 
   function enterRoom(m) {
     state.mode = 'room';
-    state.room = { code: m.code, youId: m.youId, host: !!m.host, hostId: (m.room && m.room.hostId) || m.youId, participants: (m.room && m.room.participants) || [] };
+    state.room = { code: m.code, youId: m.youId, host: !!m.host, hostId: (m.room && m.room.hostId) || m.youId, participants: (m.room && m.room.participants) || [], spectator: !!m.spectator, nights: (m.room && m.room.nights) || 0 };
+    roomChat = Array.isArray(m.chat) ? m.chat : [];
     if (!state.me) state.me = makeMe('');
     state.crew = [state.me];
     clearVerdict();
@@ -1486,11 +1519,12 @@
     closeRoomModal();
     state.shortlist = { on: false, ids: [] };   // quick-tiebreak is solo-only
     renderCrew(); renderGroupControls(); renderQuickMode(); updateSettle(); renderLedger();
-    toast(`In room ${m.code} — share the code to fill the couch.`);
+    toast(m.spectator ? `Watching room ${m.code} as a spectator.` : `In room ${m.code} — share the code to fill the couch.`);
   }
   function leaveRoom(silent) {
+    Room.send({ t: 'leave' });   // deliberate exit → server frees the seat at once
     Room.close();
-    state.mode = 'solo'; state.room = null; state.me = null;
+    state.mode = 'solo'; state.room = null; state.me = null; roomChat = [];
     const c = state.crews.find((x) => x.id === state.crewId); state.crew = c ? c.crew : seedCrew();
     clearVerdict(); loadMemory();
     $('#crew-tabs').style.display = '';
@@ -1498,25 +1532,62 @@
     if (!silent) toast('Left the room.');
   }
 
+  const ROOM_REACTIONS = ['🎉', '😂', '🔥', '❤️', '👍', '😱', '🍿', '🙌'];
   function renderRoom() {
     const r = state.room;
+    const inviteLink = location.origin + location.pathname + '?room=' + r.code;
+    const nights = r.nights ? `<span class="room-nights">· ${r.nights} night${r.nights > 1 ? 's' : ''} together</span>` : '';
     crewEl.innerHTML = `
       <div class="room-head">
-        <div class="room-code">Live room<b>${escapeHtml(r.code)}</b></div>
-        <div class="room-actions"><button id="room-invite">Copy invite link</button><button id="room-leave">Leave room</button></div>
+        <div class="room-code">Live room<b>${escapeHtml(r.code)}</b>${nights}</div>
+        <div class="room-actions"><button id="room-qr" title="Show a QR to join">▦ QR</button><button id="room-invite">Copy invite link</button><button id="room-leave">Leave room</button></div>
       </div>
+      <div class="room-qr-panel" id="room-qr-panel" hidden></div>
       <div class="room-roster" id="room-roster"></div>
-      <div class="crew room-you-grid">${personCard(state.me, 0)}</div>`;
-    renderRoster();
+      ${r.spectator
+        ? `<div class="spectator-card"><div class="spec-h">👀 You’re spectating</div><p>You can watch the verdict land and chat with the room, but you’re not part of the vote.</p><button class="ghost-btn" id="join-vote">Join the vote →</button></div>`
+        : `<div class="crew room-you-grid">${personCard(state.me, 0)}</div>`}
+      <div class="room-social">
+        <div class="reactions-bar" id="reactions-bar" aria-label="Send a reaction">${ROOM_REACTIONS.map((e) => `<button class="reaction-btn" data-react="${e}" aria-label="React ${e}">${e}</button>`).join('')}</div>
+        <div class="room-chat">
+          <div class="chat-log" id="chat-log"></div>
+          <form class="chat-form" id="chat-form"><input type="text" id="chat-input" maxlength="280" placeholder="Say something to the room…" autocomplete="off" aria-label="Chat message" /><button type="submit" aria-label="Send">➤</button></form>
+        </div>
+      </div>`;
+    renderRoster(); renderChat();
+    $('#room-qr')?.addEventListener('click', () => {
+      const panel = $('#room-qr-panel'); if (!panel) return;
+      if (panel.hidden) { panel.innerHTML = `${typeof QR !== 'undefined' ? QR.svg(inviteLink, { ecl: 'M', scale: 5, quiet: 2, dark: '#0d0b08', light: '#f6efe2' }) : ''}<div class="rqr-cap">Scan to join room ${escapeHtml(r.code)}</div>`; panel.hidden = false; } else panel.hidden = true;
+    });
+    $('#join-vote')?.addEventListener('click', () => { Room.send({ t: 'spectate', on: false }); state.room.spectator = false; renderRoom(); updateSettle(); });
+    $('#reactions-bar')?.addEventListener('click', (e) => { const b = e.target.closest('.reaction-btn'); if (b) Room.send({ t: 'react', emoji: b.dataset.react }); });
+    $('#chat-form')?.addEventListener('submit', (e) => { e.preventDefault(); const inp = $('#chat-input'); const text = (inp.value || '').trim(); if (text) { Room.send({ t: 'chat', text }); inp.value = ''; } });
   }
   function renderRoster() {
     const el = $('#room-roster'); if (!el || !state.room) return;
+    const iAmHost = state.room.host;
     el.innerHTML = state.room.participants.map((p) => {
       const [c1, c2] = SEATS[(p.avatarIndex || 0) % SEATS.length];
       const you = p.id === state.room.youId, host = p.id === state.room.hostId;
       const initial = (p.name || '?').trim()[0]?.toUpperCase() || '?';
-      return `<div class="rp ${p.ready ? 'ready' : ''}"><div class="rp-av" style="background:linear-gradient(135deg,${c1},${c2})" aria-hidden="true">${initial}</div><div class="rp-name">${escapeHtml(p.name || 'Guest')}${you ? ' <span class="rp-tag">you</span>' : ''}${host ? ' <span class="rp-tag host">host</span>' : ''}</div><div class="rp-dot" title="${p.ready ? 'ready' : 'setting up'}"></div></div>`;
+      const status = p.spectator ? 'spectating' : (p.deciding ? 'still deciding…' : (p.ready ? 'ready' : 'setting up'));
+      const ctrl = (iAmHost && !you) ? `<div class="rp-ctrl">${!p.spectator ? `<button class="rp-btn" data-host="${escapeHtml(p.id)}" title="Make host">👑</button>` : ''}<button class="rp-btn kick" data-kick="${escapeHtml(p.id)}" title="Remove from room">✕</button></div>` : '';
+      return `<div class="rp ${p.ready ? 'ready' : ''} ${p.spectator ? 'spec' : ''} ${p.deciding ? 'deciding' : ''}"><div class="rp-av" style="background:linear-gradient(135deg,${c1},${c2})" aria-hidden="true">${initial}</div><div class="rp-name">${escapeHtml(p.name || 'Guest')}${you ? ' <span class="rp-tag">you</span>' : ''}${host ? ' <span class="rp-tag host">host</span>' : ''}${p.spectator ? ' <span class="rp-tag spec">watching</span>' : ''}<div class="rp-status">${status}</div></div>${ctrl}<div class="rp-dot" title="${status}"></div></div>`;
     }).join('');
+    el.querySelectorAll('[data-host]').forEach((b) => b.addEventListener('click', () => { const nm = (state.room.participants.find((p) => p.id === b.dataset.host) || {}).name || 'them'; if (window.confirm(`Hand the host role to ${nm}?`)) Room.send({ t: 'host', to: b.dataset.host }); }));
+    el.querySelectorAll('[data-kick]').forEach((b) => b.addEventListener('click', () => { const nm = (state.room.participants.find((p) => p.id === b.dataset.kick) || {}).name || 'this person'; if (window.confirm(`Remove ${nm} from the room?`)) Room.send({ t: 'kick', id: b.dataset.kick }); }));
+  }
+  function renderChat() {
+    const log = $('#chat-log'); if (!log || !state.room) return;
+    log.innerHTML = roomChat.map((c) => `<div class="chat-msg ${c.id === state.room.youId ? 'mine' : ''}"><span class="chat-from">${escapeHtml(c.from || 'Guest')}</span><span class="chat-text">${escapeHtml(c.text)}</span></div>`).join('') || `<div class="chat-empty">Say hi while everyone sets up…</div>`;
+    log.scrollTop = log.scrollHeight;
+  }
+  function onChat(m) { roomChat.push({ id: m.id, from: m.from, text: m.text, at: m.at }); if (roomChat.length > 200) roomChat.shift(); renderChat(); }
+  function floatReaction(m) {
+    const el = document.createElement('div'); el.className = 'float-react'; el.textContent = m.emoji;
+    el.style.left = (8 + Math.random() * 84) + '%';
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 2600);
   }
   function updateSettle() {
     const label = resolveBtn.querySelector('.sb-label');
@@ -1561,11 +1632,17 @@
     if (e.key === 'Escape') { closeRoomModal(); return; }
     if (e.key === 'Tab') { const f = roomModal.querySelectorAll('button, a[href], input, [tabindex]:not([tabindex="-1"])'); if (!f.length) return; const first = f[0], last = f[f.length - 1]; if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); } }
   });
+  const roomPoolPayload = () => ({ disabled: (state.pool.disabled || []).slice(), custom: (state.pool.custom || []).slice() });
   function startRoom(kind, code) {
     const name = ($('#rm-name').value || '').trim();
     if (kind === 'join' && !(code || '').trim()) { setRoomNote('Enter a room code to join.'); return; }
+    const spectate = kind === 'join' && $('#rm-spectate') && $('#rm-spectate').checked;
     state.me = makeMe(name);
-    const doSend = () => { if (kind === 'create') Room.send({ t: 'create', name, avatarIndex: 0, person: mePayload() }); else Room.send({ t: 'join', code: String(code).toUpperCase(), name, avatarIndex: 0, person: mePayload() }); };
+    if (state.room) state.room.spectator = !!spectate;
+    const doSend = () => {
+      if (kind === 'create') Room.send({ t: 'create', clientId: myClientId, name, avatarIndex: 0, person: mePayload(), pool: roomPoolPayload() });
+      else Room.send({ t: 'join', code: String(code).toUpperCase(), clientId: myClientId, spectator: !!spectate, name, avatarIndex: 0, person: mePayload() });
+    };
     if (Room.connected()) return doSend();
     setRoomNote('Connecting…');
     Room.connect((ok) => { if (!ok) { setRoomNote('Couldn’t reach the room server. Live rooms need the app running via “node server.js”, not opened as a file.'); return; } doSend(); });

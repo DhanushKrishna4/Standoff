@@ -3,6 +3,8 @@
 *.log
 Thumbs.db
 
-# Runtime data written by the live-rooms server
-.standoff-rooms.json
-.standoff-accounts.json
+# Runtime data written by the live-rooms server (ledgers, accounts, live-room snapshot)
+.standoff-*.json
+node_modules/
+test-results/
+playwright-report/

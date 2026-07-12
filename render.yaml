@@ -14,9 +14,19 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-    # Free tier has an ephemeral disk, so room ledgers + accounts reset on each
-    # redeploy. To persist them, switch `plan` to `starter` and uncomment below —
-    # the server writes to $DATA_DIR when set (see server.js).
+      # FREE room-persistence across redeploys (item 27): point REDIS_URL at a
+      # free Redis (e.g. Upstash) and active live rooms survive a redeploy on the
+      # ephemeral free-tier disk — the server snapshots rooms to Redis on shutdown
+      # and restores them on boot. Also enables cross-instance fan-out if you ever
+      # run more than one instance. Leave unset → pure in-memory single instance.
+      #   - key: REDIS_URL
+      #     sync: false            # set the value (rediss://…) in the dashboard, not in git
+      # Stricter CSWSH: pin the WebSocket origin allow-list (defaults to same-origin).
+      #   - key: ALLOWED_ORIGINS
+      #     value: https://standoff-liyl.onrender.com
+    # The room ledgers + accounts (not live rooms) also live on disk. Free tier's
+    # disk is ephemeral, so those reset on redeploy. To persist them, switch `plan`
+    # to `starter` and uncomment below — the server writes to $DATA_DIR when set.
     #   - key: DATA_DIR
     #     value: /data
     # disk:
