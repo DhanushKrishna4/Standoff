@@ -836,6 +836,7 @@
       <div class="result-actions">${hostControls}
         <button class="reroll-btn" id="copy-verdict-btn">Copy verdict</button>
         <button class="reroll-btn" id="card-btn">📸 Save as card</button>
+        <button class="reroll-btn" id="cal-btn">🗓 Add to calendar</button>
         ${guestNote}${excludeNote}
       </div>
 
@@ -865,6 +866,7 @@
       else window.prompt('Copy the verdict:', text);
     });
     $('#card-btn')?.addEventListener('click', () => renderVerdictCard(r));
+    $('#cal-btn')?.addEventListener('click', () => buildPickICS(pick));
     injectQR(pick);
 
     setTimeout(() => injectSolidity(r), 30);
@@ -1270,28 +1272,54 @@
   const fmtUTC = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
   const icsEscape = (s) => String(s).replace(/([,;\\])/g, '\\$1').replace(/\r?\n/g, '\\n');
   const icsFold = (line) => { let out = ''; let l = line; while (l.length > 73) { out += l.slice(0, 73) + '\r\n '; l = l.slice(73); } return out + l; };
-  function buildICS() {
-    const weekday = +($('#sch-day').value);
-    const [hh, mm] = ($('#sch-time').value || '20:00').split(':').map(Number);
-    const weekly = $('#sch-weekly').checked;
-    const start = nextOccurrence(weekday, hh || 20, mm || 0);
-    const DAYS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
-    const desc = 'Settle what to watch — fairly. Pre-set your taste so the pick is ready when you sit down:\n' + shareLink();
+  const fmtDur = (min) => { const m = Math.max(1, Math.round(min)); const h = Math.floor(m / 60), r = m % 60; return 'PT' + (h ? h + 'H' : '') + (r ? r + 'M' : ''); };
+  // Shared VEVENT builder — used by both the recurring ritual and the one-off pick.
+  function makeICS({ start, durationMin, summary, description, rrule, alarmDesc }) {
     const lines = [
       'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Standoff//Movie Night//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
       'BEGIN:VEVENT',
       'UID:' + Date.now() + '-' + Math.random().toString(36).slice(2) + '@standoff',
       'DTSTAMP:' + fmtUTC(new Date()),
       'DTSTART:' + fmtLocal(start),
-      'DURATION:PT2H',
-      weekly ? 'RRULE:FREQ=WEEKLY;BYDAY=' + DAYS[weekday] : '',
-      'SUMMARY:🎬 Movie night',
-      'DESCRIPTION:' + icsEscape(desc),
-      'BEGIN:VALARM', 'TRIGGER:-PT2H', 'ACTION:DISPLAY', 'DESCRIPTION:Pre-set your taste for movie night', 'END:VALARM',
+      'DURATION:' + fmtDur(durationMin),
+      rrule ? 'RRULE:' + rrule : '',
+      'SUMMARY:' + icsEscape(summary),
+      'DESCRIPTION:' + icsEscape(description),
+      'BEGIN:VALARM', 'TRIGGER:-PT1H', 'ACTION:DISPLAY', 'DESCRIPTION:' + icsEscape(alarmDesc || summary), 'END:VALARM',
       'END:VEVENT', 'END:VCALENDAR',
     ].filter(Boolean).map(icsFold);
-    downloadFile('standoff-movie-night.ics', lines.join('\r\n'), 'text/calendar');
+    return lines.join('\r\n');
+  }
+  function buildICS() {                                       // the recurring ritual
+    const weekday = +($('#sch-day').value);
+    const [hh, mm] = ($('#sch-time').value || '20:00').split(':').map(Number);
+    const weekly = $('#sch-weekly').checked;
+    const durationMin = +($('#sch-dur') ? $('#sch-dur').value : 120) || 120;
+    const start = nextOccurrence(weekday, hh || 20, mm || 0);
+    const DAYS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+    const ics = makeICS({
+      start, durationMin, rrule: weekly ? 'FREQ=WEEKLY;BYDAY=' + DAYS[weekday] : null,
+      summary: '🎬 Movie night',
+      description: 'Settle what to watch — fairly. Pre-set your taste so the pick is ready when you sit down:\n' + shareLink(),
+      alarmDesc: 'Pre-set your taste for movie night',
+    });
+    downloadFile('standoff-movie-night.ics', ics, 'text/calendar');
     toast('Movie night added to your calendar — with a taste-setup link inside.');
+  }
+  // One-off calendar event for a locked pick, sized to the film's runtime + buffer.
+  function buildPickICS(pick) {
+    const now = new Date();
+    const eight = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 20, 0, 0, 0);
+    const start = now < eight ? eight : new Date(Math.ceil(now.getTime() / 9e5) * 9e5); // tonight 8pm, or the next 15-min slot if it's already past
+    const durationMin = (pick.runtime || 120) + 20;          // + settling / snacks buffer
+    const ics = makeICS({
+      start, durationMin,
+      summary: '🎬 ' + pick.title,
+      description: `Tonight’s pick, settled fairly with Standoff.${pick.hook ? '\n“' + pick.hook + '”' : ''}\nWhere to watch: ${justWatchUrl(pick)}`,
+      alarmDesc: 'Movie night — ' + pick.title,
+    });
+    downloadFile(`standoff-${slugTitle(pick.title)}.ics`, ics, 'text/calendar');
+    toast(`Added “${pick.title}” to your calendar — ${pick.runtime || 120} min${pick.kind === 'Series' ? '/ep' : ''} + a little buffer.`);
   }
   $('#sch-ics')?.addEventListener('click', buildICS);
 

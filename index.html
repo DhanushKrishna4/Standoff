@@ -187,6 +187,12 @@
               <option value="1">Mondays</option><option value="2">Tuesdays</option><option value="3">Wednesdays</option><option value="4">Thursdays</option>
             </select>
             <input type="time" id="sch-time" value="20:00" aria-label="Time" />
+            <select id="sch-dur" aria-label="How long to block out">
+              <option value="90">1½ hours</option>
+              <option value="120" selected>2 hours</option>
+              <option value="150">2½ hours</option>
+              <option value="180">3 hours</option>
+            </select>
             <label class="sch-weekly"><input type="checkbox" id="sch-weekly" checked /> weekly</label>
             <button class="ghost-btn" id="sch-ics">⭳ Add to calendar</button>
           </div>
