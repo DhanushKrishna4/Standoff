@@ -867,6 +867,7 @@
     });
     $('#card-btn')?.addEventListener('click', () => renderVerdictCard(r));
     $('#cal-btn')?.addEventListener('click', () => buildPickICS(pick));
+    $('#ho-copy')?.addEventListener('click', () => copyPartyInvite(pick));
     injectQR(pick);
 
     setTimeout(() => injectSolidity(r), 30);
@@ -880,20 +881,28 @@
     const provNote = providers.length ? `<div class="ho-prov">On ${escapeHtml(providers.slice(0, 3).join(', '))}${providers.length > 3 ? ' & more' : ''}</div>` : '';
     return `<div class="handoff">
       <div class="ho-col">
-        <div class="ho-h">Where to watch</div>
+        <div class="ho-h"><span class="ho-step">1</span> Open the title</div>
         <a class="ho-btn" href="${justWatchUrl(pick)}" target="_blank" rel="noopener">🔍 Find it &amp; open the app</a>
         ${provNote}
       </div>
       <div class="ho-col">
-        <div class="ho-h">Watch together, apart</div>
-        <a class="ho-btn" href="https://www.teleparty.com/" target="_blank" rel="noopener">🎉 Teleparty</a>
-        <a class="ho-btn" href="https://scener.com/" target="_blank" rel="noopener">🎬 Scener</a>
+        <div class="ho-h"><span class="ho-step">2</span> Start a sync party</div>
+        <a class="ho-btn" href="https://www.teleparty.com/" target="_blank" rel="noopener">🎉 Teleparty <span class="ho-sub">extension</span></a>
+        <a class="ho-btn" href="https://scener.com/" target="_blank" rel="noopener">🎬 Scener <span class="ho-sub">web</span></a>
+        <button class="ho-btn ho-copy" id="ho-copy" type="button">📋 Copy watch-party invite</button>
       </div>
       <div class="ho-col ho-qrcol">
-        <div class="ho-h">Grab it on your phone</div>
+        <div class="ho-h">On your phone</div>
         <div class="ho-qr" id="ho-qr" title="Scan to open where-to-watch"></div>
       </div>
-    </div>`;
+    </div>
+    <p class="ho-flow-note">Get everyone onto the title first, then switch on a sync party — Teleparty and Scener add shared play/pause + chat on top of the streaming page. There's no per-title link to pre-make, so the copy-invite gives your crew the title, where to watch, and the how in one paste.</p>`;
+  }
+  function copyPartyInvite(pick) {
+    const wl = justWatchUrl(pick);
+    const text = `🎬 Movie night: ${pick.title}${pick.year ? ` (${pick.year})` : ''}\nWhere to watch: ${wl}\nWatch together: open the title, then start a party with Teleparty (teleparty.com) or Scener (scener.com) and share the link it gives you.\n— picked fairly with Standoff`;
+    if (navigator.clipboard) navigator.clipboard.writeText(text).then(() => toast('Watch-party invite copied — paste it to your crew.')).catch(() => window.prompt('Copy the invite:', text));
+    else window.prompt('Copy the invite:', text);
   }
   function injectQR(pick) {
     const holder = document.querySelector('#ho-qr');
